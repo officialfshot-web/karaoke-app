@@ -6,7 +6,7 @@ import AuthenticationServices
 import CryptoKit
 
 // 1. Where you hosted the web app (GitHub Pages etc.)
-let appURL = URL(string: "https://YOUR-USERNAME.github.io/karaoke-app/")!
+let appURL = URL(string: "https://officialfshot-web.github.io/karaoke-app/")!
 // 2. Google Cloud OAuth client of type "iOS" (optional — only needed for Sign in)
 let iosClientID = "PASTE-IOS-CLIENT-ID.apps.googleusercontent.com"
 
