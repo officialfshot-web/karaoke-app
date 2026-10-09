@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Karaoke">
+<meta name="theme-color" content="#0c0a09">
+<title>Karaoke</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0a09;--card:#171412;--card2:#221e1b;--txt:#f6f1e9;--mute:rgba(246,241,233,.55);--faint:rgba(246,241,233,.09);
+  --acc:#ff5a36;--acc-rgb:255,90,54;--acc2:#ffb02e;
+  --disp:"Bricolage Grotesque",-apple-system,system-ui,sans-serif;
+  --ease:cubic-bezier(.22,1,.36,1);
+  --st:env(safe-area-inset-top);--sb:env(safe-area-inset-bottom);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--txt);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+input{font:inherit;color:var(--txt);background:none;border:0;outline:none;width:100%;min-width:0}
+svg{display:block}
+.tap{transition:transform .18s var(--ease),opacity .18s}
+.tap:active{transform:scale(.95);opacity:.85}
+.art{display:block}
+.cover{background:var(--card2) center/auto 134% no-repeat}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grain{position:absolute;inset:0;pointer-events:none;opacity:.07;mix-blend-mode:overlay;z-index:2;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* ---------- views ---------- */
+.view{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg)}
+#list,#player{transition:transform .5s var(--ease),visibility 0s .5s;visibility:hidden;z-index:3}
+#list{transform:translateX(100%)}
+#player{transform:translateY(100%);z-index:6}
+#list.on,#player.on{transform:none;visibility:visible;transition:transform .5s var(--ease)}
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:calc(var(--st) + 18px) 20px calc(var(--sb) + 110px);position:relative;z-index:1}
+.scroll::-webkit-scrollbar{display:none}
+
+/* ---------- home ---------- */
+.glow{position:absolute;width:140vw;height:70vh;left:-20vw;top:-30vh;border-radius:50%;pointer-events:none;
+  background:radial-gradient(closest-side,rgba(var(--acc-rgb),.33),transparent);transition:background 1.2s;z-index:0}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.hello{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--acc);transition:color 1s}
+h1{font-family:var(--disp);font-weight:800;font-size:clamp(38px,11vw,54px);line-height:.98;letter-spacing:-.035em;margin-top:8px}
+h1 em{font-style:normal;color:var(--acc);transition:color 1s}
+.me{flex:none;width:42px;height:42px;display:grid;place-items:center;border-radius:99px;background:var(--txt);color:var(--bg);font-weight:700;font-size:14px;margin-top:4px}
+.me.in{width:40px;padding:0;background:var(--card2);color:var(--txt);display:grid;place-items:center}
+.find{display:flex;align-items:center;gap:12px;height:58px;padding:0 8px 0 18px;margin:26px 0 4px;border-radius:20px;background:var(--card);border:1px solid var(--faint);transition:border-color .25s,box-shadow .25s}
+.find:focus-within{border-color:rgba(var(--acc-rgb),.6);box-shadow:0 0 0 5px rgba(var(--acc-rgb),.12)}
+.find input{font-size:17px;height:100%}
+.find input::placeholder{color:var(--mute)}
+.find .x{width:36px;height:36px;border-radius:50%;display:none;place-items:center;color:var(--mute)}
+.find.has .x{display:grid}
+h2{font-family:var(--disp);font-size:24px;font-weight:700;letter-spacing:-.02em;margin:34px 0 14px;display:flex;align-items:baseline;justify-content:space-between}
+h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:0}
+.rail{display:flex;gap:14px;overflow-x:auto;margin:0 -20px;padding:0 20px 6px;scroll-snap-type:x mandatory;scroll-padding:20px}
+.rail::-webkit-scrollbar{display:none}
+.tile{flex:none;width:150px;text-align:left;scroll-snap-align:start}
+.tile .art{width:150px;height:150px;border-radius:18px;box-shadow:0 14px 30px -10px rgba(0,0,0,.7)}
+.tile b{display:block;font-size:15px;font-weight:650;margin-top:10px}
+.tile span{display:block;font-size:13px;color:var(--mute);margin-top:1px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 14px}
+.grid .tile{width:auto}
+.grid .tile .art{width:100%;height:auto;aspect-ratio:1}
+.liked{grid-column:1/-1;position:relative;overflow:hidden;height:132px;border-radius:22px;padding:18px 20px;text-align:left;display:flex;flex-direction:column;justify-content:flex-end;
+  background:linear-gradient(120deg,var(--acc),var(--acc2));color:#1a0d06;transition:background 1s}
+.liked b{font-family:var(--disp);font-size:30px;font-weight:800;letter-spacing:-.03em;line-height:1}
+.liked span{font-size:14px;font-weight:600;opacity:.75;margin-top:4px}
+.liked svg{position:absolute;right:-18px;top:-22px;width:150px;height:150px;opacity:.22;transform:rotate(14deg)}
+.connect{margin-top:30px;border-radius:26px;padding:26px 22px 22px;position:relative;overflow:hidden;
+  background:linear-gradient(160deg,#2a1810,#140f0c 60%);border:1px solid rgba(var(--acc-rgb),.25)}
+.connect h3{font-family:var(--disp);font-size:28px;font-weight:800;letter-spacing:-.03em;line-height:1.05}
+.connect p{color:var(--mute);margin:10px 0 18px;font-size:15px}
+.cta{height:50px;padding:0 24px;border-radius:99px;background:var(--acc);color:#1a0d06;font-weight:750;font-size:16px;display:inline-flex;align-items:center;gap:10px;box-shadow:0 10px 30px -8px rgba(var(--acc-rgb),.7);transition:background 1s,transform .18s var(--ease)}
+.cta:active{transform:scale(.95)}
+.gbtn{height:52px;padding:0 22px 0 16px;border-radius:99px;background:#fff;color:#1f1f1f;font-weight:600;font-size:16px;display:inline-flex;align-items:center;gap:12px;box-shadow:0 10px 30px -10px rgba(0,0,0,.6)}
+.ghost{height:50px;padding:0 20px;border-radius:99px;background:var(--faint);font-weight:650}
+.row{display:flex;align-items:center;gap:14px;width:100%;padding:7px 0;text-align:left}
+.row .art{width:58px;height:58px;border-radius:14px;flex:none}
+.row>div{flex:1;min-width:0}
+.row b{display:block;font-weight:650}
+.row span{display:block;font-size:14px;color:var(--mute)}
+.row .n{width:24px;flex:none;text-align:center;color:var(--mute);font-variant-numeric:tabular-nums;font-size:14px}
+.row.playing b{color:var(--acc)}
+.hint{color:var(--mute);text-align:center;padding:28px 10px;font-size:15px}
+.skel{background:linear-gradient(90deg,var(--card) 0,var(--card2) 50%,var(--card) 100%) 0 0/200% 100%;animation:sh 1.3s linear infinite}
+@keyframes sh{to{background-position:-200% 0}}
+.fadeup{animation:fu .6s var(--ease) both}
+@keyframes fu{from{opacity:0;transform:translateY(14px)}}
+
+/* ---------- playlist ---------- */
+.back{position:fixed;top:calc(var(--st) + 10px);left:14px;z-index:4;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:rgba(20,17,15,.6);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.lhead{text-align:center;padding-top:30px}
+.collage{width:220px;height:220px;margin:0 auto;border-radius:24px;overflow:hidden;display:grid;grid-template-columns:1fr 1fr;box-shadow:0 30px 60px -20px rgba(var(--acc-rgb),.45),0 20px 40px -20px #000}
+.collage.one{grid-template-columns:1fr}
+.collage i{display:block}
+.lhead h3{font-family:var(--disp);font-size:32px;font-weight:800;letter-spacing:-.03em;margin-top:22px;line-height:1.05}
+.lhead p{color:var(--mute);margin-top:6px;font-size:14px}
+.lbtns{display:flex;gap:10px;justify-content:center;margin:20px 0 18px}
+
+/* ---------- mini player ---------- */
+.mini{position:fixed;left:10px;right:10px;bottom:calc(var(--sb) + 10px);z-index:5;height:66px;border-radius:20px;padding:8px 8px 8px 8px;display:flex;align-items:center;gap:12px;overflow:hidden;
+  background:rgba(34,30,27,.78);backdrop-filter:blur(24px) saturate(1.8);-webkit-backdrop-filter:blur(24px) saturate(1.8);box-shadow:0 18px 40px -12px #000,inset 0 0 0 1px var(--faint);
+  transform:translateY(160%);transition:transform .5s var(--ease)}
+.mini.on{transform:none}
+.mini .art{width:50px;height:50px;border-radius:12px;flex:none}
+.mini>div{flex:1;min-width:0;text-align:left}
+.mini b{display:block;font-size:15px;font-weight:650}
+.mini span{display:block;font-size:13px;color:var(--mute)}
+.mini .pp{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;flex:none}
+.mini .prog{position:absolute;left:0;bottom:0;height:2px;background:var(--acc);width:0}
+
+/* ---------- player ---------- */
+#player{background:#000;overflow:hidden}
+.amb{position:absolute;inset:-25%;z-index:0;filter:blur(50px) saturate(1.7) brightness(.6)}
+.amb i{position:absolute;width:75%;aspect-ratio:1;border-radius:42%;background:center/auto 134% no-repeat;animation:drift 22s ease-in-out infinite alternate;transition:background-image 1s}
+.amb i:nth-child(1){left:0;top:0}
+.amb i:nth-child(2){right:0;top:22%;animation-duration:29s;animation-direction:alternate-reverse}
+.amb i:nth-child(3){left:12%;bottom:0;animation-duration:25s}
+@keyframes drift{to{transform:translate(14%,9%) rotate(55deg) scale(1.25)}}
+.shade{position:absolute;inset:0;z-index:1;background:linear-gradient(180deg,rgba(0,0,0,.35),rgba(0,0,0,.15) 40%,rgba(0,0,0,.6))}
+#player>.ui{position:relative;z-index:3;display:flex;flex-direction:column;height:100%;padding:var(--st) 0 var(--sb)}
+.ptop{display:flex;align-items:center;gap:10px;padding:8px 14px}
+.ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;flex:none}
+.ic.glass{background:rgba(255,255,255,.1)}
+.pmeta{flex:1;min-width:0;text-align:center}
+.pmeta b{display:block;font-weight:700;font-size:15px}
+.pmeta span{display:block;font-size:13px;color:rgba(255,255,255,.65)}
+.video{margin:4px auto 0;width:calc(100% - 28px);max-width:calc(26vh * 16 / 9);aspect-ratio:16/9;border-radius:18px;overflow:hidden;background:#000;
+  box-shadow:0 20px 50px -15px rgba(0,0,0,.8);transition:width .5s var(--ease),max-width .5s var(--ease),margin .5s var(--ease)}
+.video.small{width:42%;max-width:220px;margin-right:14px}
+.video iframe,.video>div{width:100%;height:100%;border:0;display:block}
+#lyr{flex:1;position:relative;overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  -webkit-mask-image:linear-gradient(transparent,#000 13%,#000 72%,transparent);mask-image:linear-gradient(transparent,#000 13%,#000 72%,transparent)}
+#lyrIn{position:absolute;left:0;right:0;top:0;padding:0 28px;transition:transform .7s var(--ease);will-change:transform}
+.ln{font-family:var(--disp);font-weight:800;font-size:clamp(30px,8.6vw,46px);line-height:1.1;letter-spacing:-.025em;margin-bottom:24px;
+  color:rgba(255,255,255,.3);transform:scale(.93);transform-origin:left center;transition:transform .6s var(--ease),opacity .5s,filter .5s,color .5s}
+.ln[data-d="1"]{filter:blur(.5px)}
+.ln[data-d="2"]{filter:blur(1.4px);opacity:.75}
+.ln[data-d="3"]{filter:blur(2.4px);opacity:.5}
+.ln.past{opacity:.35;filter:blur(1px)}
+.ln.on{transform:none;filter:drop-shadow(0 0 22px rgba(var(--acc-rgb),.45))}
+.ln.tap{cursor:pointer}
+.w{display:inline-block;--wp:0%;transition:transform .35s cubic-bezier(.3,1.7,.5,1)}
+.ln.on .w{color:transparent;-webkit-background-clip:text;background-clip:text;background-image:linear-gradient(90deg,#fff var(--wp),rgba(255,255,255,.34) var(--wp))}
+.ln.on .w.now{transform:translateY(-.08em)}
+.ln.past .w{color:rgba(255,255,255,.55)}
+.ln.gap{display:flex;gap:14px;padding:10px 0}
+.ln.gap i{width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.25);transition:background .3s,transform .3s var(--ease),box-shadow .3s}
+.ln.gap.on i{animation:breathe 2.4s ease-in-out infinite}
+.ln.gap i:nth-child(2){animation-delay:.2s}.ln.gap i:nth-child(3){animation-delay:.4s}
+.ln.gap i.lit{background:var(--acc);box-shadow:0 0 18px var(--acc);transform:scale(1.25);animation:none}
+@keyframes breathe{50%{transform:scale(1.15);background:rgba(255,255,255,.45)}}
+.ln.sk{height:.95em;border-radius:12px;background:rgba(255,255,255,.12);transform:none;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
+.msg{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:0 30px 60px;color:rgba(255,255,255,.75)}
+.msg b{font-family:var(--disp);font-size:28px;font-weight:800;color:#fff;letter-spacing:-.02em}
+.pbot{padding:4px 22px 12px}
+.bar{position:relative;height:22px;display:flex;align-items:center;touch-action:none;cursor:pointer}
+.bar .tr{position:absolute;left:0;right:0;height:4px;border-radius:4px;background:rgba(255,255,255,.18);overflow:hidden}
+.bar .fl{height:100%;width:0;background:#fff;border-radius:4px}
+.bar .kn{position:absolute;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff;left:0;transform:scale(0);transition:transform .2s}
+.bar:active .kn,.bar.drag .kn{transform:scale(1)}
+.times{display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.55);font-variant-numeric:tabular-nums;margin-top:-2px}
+.ctrls{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+.ctrls .ic{width:48px;height:48px}
+.play{width:76px;height:76px;border-radius:50%;background:#fff;color:#000;display:grid;place-items:center;box-shadow:0 0 0 0 rgba(var(--acc-rgb),.5),0 14px 40px -10px rgba(var(--acc-rgb),.8);transition:transform .2s var(--ease)}
+.play:active{transform:scale(.9)}
+.syncbar{display:none;align-items:center;gap:12px;margin:12px 14px 0;padding:10px 10px 10px 16px;border-radius:16px;font-size:14px;font-weight:600;line-height:1.3;
+  background:rgba(var(--acc-rgb),.2);border:1px solid rgba(var(--acc-rgb),.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.syncbar.on{display:flex;animation:fu .4s var(--ease)}
+.syncbar span{flex:1}
+.syncbar button{height:34px;padding:0 14px;border-radius:10px;background:rgba(255,255,255,.15);font-weight:700;font-size:13px;flex:none}
+#lyr.syncing .ln:not(.gap):not(.sk){color:rgba(255,255,255,.7);filter:none;opacity:1}
+.sync{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* sheets */
+.sheet-bg{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.5);opacity:0;visibility:hidden;transition:opacity .35s,visibility 0s .35s}
+.sheet-bg.on{opacity:1;visibility:visible;transition:opacity .35s}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:86vh;overflow-y:auto;border-radius:28px 28px 0 0;padding:10px 20px calc(var(--sb) + 22px);
+  background:#1a1614;box-shadow:0 -20px 60px rgba(0,0,0,.5);transform:translateY(100%);transition:transform .45s var(--ease)}
+.sheet-bg.on .sheet{transform:none}
+.grab{width:40px;height:5px;border-radius:5px;background:rgba(255,255,255,.2);margin:0 auto 16px}
+.sheet h4{font-family:var(--disp);font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px}
+.sheet .lbl{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);margin:22px 0 10px}
+.field{display:flex;align-items:center;gap:10px;height:52px;padding:0 6px 0 16px;border-radius:16px;background:var(--card2);border:1px solid var(--faint)}
+.field:focus-within{border-color:rgba(var(--acc-rgb),.6)}
+.field button{height:40px;padding:0 14px;border-radius:12px;background:var(--acc);color:#1a0d06;font-weight:700;font-size:14px;flex:none}
+.stepper{display:flex;align-items:center;gap:12px}
+.stepper button{width:52px;height:52px;border-radius:16px;background:var(--card2);font-size:22px;font-weight:600}
+.stepper div{flex:1;text-align:center;font-family:var(--disp);font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
+.stepper div small{display:block;font:500 12px -apple-system,system-ui;color:var(--mute)}
+.opt{display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;text-align:left;border-bottom:1px solid var(--faint);font-weight:600}
+.choice{display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;border-radius:14px;background:var(--card2);text-align:left}
+.choice>div{flex:1;min-width:0}
+.choice b{display:block;font-weight:650}
+.choice span{font-size:13px;color:var(--mute)}
+.tag{font-size:11px;font-weight:800;letter-spacing:.06em;padding:4px 8px;border-radius:8px;background:rgba(var(--acc-rgb),.18);color:var(--acc);flex:none}
+.tag.off{background:var(--faint);color:var(--mute)}
+.sheet p{color:var(--mute);font-size:14px;margin-top:8px}
+.sheet code{font-size:12px;word-break:break-all;color:var(--txt)}
+
+/* end card */
+.end{position:absolute;inset:0;z-index:8;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px;
+  background:rgba(8,6,5,.55);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);opacity:0;visibility:hidden;transition:opacity .5s,visibility 0s .5s}
+.end.on{opacity:1;visibility:visible;transition:opacity .5s}
+.end .art{width:200px;height:200px;border-radius:26px;transform:rotate(-5deg);box-shadow:0 30px 70px -20px rgba(var(--acc-rgb),.7)}
+.end.on .art{animation:pop .8s var(--ease) both}
+@keyframes pop{from{transform:rotate(-20deg) scale(.6);opacity:0}}
+.end h3{font-family:var(--disp);font-size:52px;font-weight:800;letter-spacing:-.04em;line-height:1;margin-top:34px}
+.end p{color:rgba(255,255,255,.7);margin-top:10px}
+.end>div{display:flex;flex-direction:column;align-items:center}
+.end .btns{display:flex;flex-direction:column;gap:10px;width:100%;max-width:320px;margin-top:30px}
+.end .cta{justify-content:center;position:relative;overflow:hidden}
+.end .cta i{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.3);width:0}
+.spark{position:absolute;left:50%;top:40%;width:10px;height:10px;border-radius:2px;z-index:9;pointer-events:none;animation:burst 1.4s var(--ease) forwards}
+@keyframes burst{to{transform:translate(var(--x),var(--y)) rotate(var(--r));opacity:0}}
+
+.toast{position:fixed;left:50%;top:calc(var(--st) + 14px);z-index:30;transform:translate(-50%,-150%);max-width:88vw;padding:12px 18px;border-radius:16px;background:#2a2421;font-size:14px;font-weight:600;box-shadow:0 14px 40px rgba(0,0,0,.5);transition:transform .45s var(--ease)}
+.toast.on{transform:translate(-50%,0)}
+
+/* ---------- sideways phone / car screen (mirrored) ---------- */
+@media (orientation: landscape) and (max-height: 620px) {
+  #player>.ui{display:grid;grid-template-columns:minmax(260px,36%) 1fr;grid-template-rows:auto auto auto 1fr auto;
+    padding:0 env(safe-area-inset-right) 0 env(safe-area-inset-left)}
+  .ptop{grid-column:1;grid-row:1;padding-top:10px}
+  .video{grid-column:1;grid-row:2;width:calc(100% - 28px);max-width:none;margin:4px 14px 0}
+  .video.small{width:55%;margin:4px auto 0 14px}
+  .syncbar{grid-column:1;grid-row:3}
+  .pbot{grid-column:1;grid-row:5;padding-bottom:max(10px,var(--sb))}
+  .ctrls .ic{width:44px;height:44px}
+  .play{width:64px;height:64px}
+  #lyr{grid-column:2;grid-row:1/-1;-webkit-mask-image:linear-gradient(transparent,#000 16%,#000 78%,transparent);mask-image:linear-gradient(transparent,#000 16%,#000 78%,transparent)}
+  #lyrIn{padding:0 40px 0 30px}
+  .ln{font-size:clamp(30px,5vw,58px);margin-bottom:20px}
+  .msg{padding-bottom:0}
+  .grid{grid-template-columns:repeat(4,1fr)}
+  .scroll{padding-left:max(20px,env(safe-area-inset-left));padding-right:max(20px,env(safe-area-inset-right))}
+  .end{flex-direction:row;gap:40px;text-align:left}
+  .end>div{align-items:flex-start}
+  .end .art{width:min(42vh,220px);height:min(42vh,220px);flex:none}
+  .end h3{margin-top:0;font-size:44px}
+  .end .btns{margin-top:20px}
+}
+</style>
+</head>
+<body>
+
+<!-- HOME -->
+<section id="home" class="view">
+  <div class="glow"></div>
+  <div class="scroll">
+    <div class="top fadeup">
+      <div>
+        <div class="hello" id="hello">Good evening</div>
+        <h1 id="headline">What are we<br>singing <em>tonight?</em></h1>
+      </div>
+      <button class="me tap" id="me">Connect</button>
+    </div>
+    <form class="find fadeup" id="find" style="animation-delay:.06s">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="opacity:.55;flex:none"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" enterkeyhint="search" placeholder="Search a song, or paste a link" autocomplete="off" autocorrect="off">
+      <button type="button" class="x" id="clearQ" aria-label="Clear"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </form>
+    <div id="results"></div>
+    <div id="homeBody"></div>
+  </div>
+</section>
+
+<!-- PLAYLIST -->
+<section id="list" class="view">
+  <button class="back tap" id="listBack" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <div class="glow"></div>
+  <div class="scroll" id="listScroll">
+    <div class="lhead">
+      <div class="collage" id="collage"></div>
+      <h3 id="lTitle"></h3>
+      <p id="lSub"></p>
+      <div class="lbtns">
+        <button class="cta" id="singAll"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>Sing all</button>
+        <button class="ghost tap" id="shuffle"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg></button>
+      </div>
+    </div>
+    <div id="tracks"></div>
+  </div>
+</section>
+
+<!-- MINI PLAYER -->
+<button class="mini" id="mini">
+  <i class="art cover" id="mArt"></i>
+  <div><b class="ell" id="mT"></b><span class="ell" id="mS"></span></div>
+  <span class="pp" id="mPP"></span>
+  <i class="prog" id="mProg"></i>
+</button>
+
+<!-- PLAYER -->
+<section id="player" class="view">
+  <div class="amb"><i></i><i></i><i></i></div>
+  <div class="shade"></div>
+  <div class="grain"></div>
+  <div class="ui">
+    <div class="ptop">
+      <button class="ic glass tap" id="close" aria-label="Close"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l7 7 7-7"/></svg></button>
+      <div class="pmeta"><b class="ell" id="pt"></b><span class="ell" id="ps"></span></div>
+      <button class="ic glass tap" id="more" aria-label="Options"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+    </div>
+    <div class="video" id="vid"><div id="yt"></div></div>
+    <div class="syncbar" id="syncbar"><span id="syncTxt"></span><button id="syncX">Done</button></div>
+    <div id="lyr"><div id="lyrIn"></div><div class="msg" id="lmsg"></div></div>
+    <div class="pbot">
+      <div class="bar" id="bar"><div class="tr"><div class="fl" id="fl"></div></div><div class="kn" id="kn"></div></div>
+      <div class="times"><span id="tcur">0:00</span><span id="tdur">0:00</span></div>
+      <div class="ctrls">
+        <button class="ic tap sync" id="syncBtn" aria-label="Lyric timing">SYNC</button>
+        <button class="ic tap" id="prev" aria-label="Previous"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 6.2v11.6a1 1 0 0 1-1.55.83L10 12.83a1 1 0 0 1 0-1.66l8.45-5.8A1 1 0 0 1 20 6.2z"/></svg></button>
+        <button class="play" id="pp" aria-label="Play"></button>
+        <button class="ic tap" id="next" aria-label="Next"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.2v11.6a1 1 0 0 0 1.55.83L14 12.83a1 1 0 0 0 0-1.66L5.55 5.37A1 1 0 0 0 4 6.2z"/></svg></button>
+        <button class="ic tap" id="vidBtn" aria-label="Video size"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><rect x="12" y="11" width="6" height="5" rx="1" fill="currentColor"/></svg></button>
+      </div>
+    </div>
+  </div>
+  <div class="end" id="end">
+    <i class="art cover" id="eArt"></i>
+    <div>
+      <h3 id="eH">Mic drop.</h3>
+      <p id="eP"></p>
+      <div class="btns">
+        <button class="cta" id="eNext"><i id="eBar"></i><span id="eNextT">Next song</span></button>
+        <button class="ghost tap" id="eAgain">Sing it again</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PLAYER OPTIONS SHEET -->
+<div class="sheet-bg" id="optSheet">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h4>Lyrics</h4>
+    <div class="lbl">Timing</div>
+    <div class="stepper">
+      <button class="tap" id="offM">−</button>
+      <div id="offV">0.0s<small>in sync</small></div>
+      <button class="tap" id="offP">+</button>
+    </div>
+    <p>Words late? Tap +. Words early? Tap −. Even quicker: <b>hold any line</b> the moment it’s sung and the lyrics lock on from there. Saved for this song.</p>
+    <button class="opt tap" id="resetSync">↺&nbsp; Reset timing for this song</button>
+    <div class="lbl">Wrong lyrics?</div>
+    <form class="field" id="lyrForm"><input id="lyrQ" placeholder="Artist and song" enterkeyhint="search"><button>Find</button></form>
+    <div id="lyrChoices" style="margin-top:12px"></div>
+  </div>
+</div>
+
+<!-- SETTINGS SHEET -->
+<div class="sheet-bg" id="setSheet">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h4>Account</h4>
+    <p id="acctState"></p>
+    <div class="lbl">Google OAuth Client ID</div>
+    <div class="field"><input id="cid" placeholder="xxxx.apps.googleusercontent.com"></div>
+    <div class="lbl">YouTube API key · optional</div>
+    <div class="field"><input id="akey" placeholder="Lets you search without signing in"></div>
+    <p>Redirect URI for Google Cloud:<br><code id="redir"></code></p>
+    <div style="display:flex;gap:10px;margin-top:22px">
+      <button class="ghost tap" id="signOut" style="flex:1">Sign out</button>
+      <button class="cta" id="saveSet" style="flex:1;justify-content:center">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="app.js"></script>
+</body>
+</html>
