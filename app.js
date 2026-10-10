@@ -777,80 +777,33 @@ function detectPitch(buf, sampleRate) {
 }
 const freqToHue = f => { const lo = 90, hi = 700, t = clamp(Math.log2(Math.max(f, lo) / lo) / Math.log2(hi / lo)); return 220 - t * 220; };
 
-/* ---------- Pitch track (Guitar Hero–style scrolling note line) ---------- */
-const PT_LEN = 180, PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
-let pitchHistory = [], lastFreq = -1, smoothSemi = NaN;
-const NOTE_NAME = s => 'A' + (4 + s / 12);   // our gridlines are always multiples of 12 (A-to-A octaves)
-function drawPitchTrack() {
-  const cv = $('#pitchTrack');
-  const dpr = window.devicePixelRatio || 1;
-  const W = cv.width = cv.clientWidth * dpr, H = cv.height = cv.clientHeight * dpr;
-  const g = cv.getContext('2d');
-  g.clearRect(0, 0, W, H);
-  const yFor = s => H * (1 - (clamp(s, PT_LO, PT_HI) - PT_LO) / (PT_HI - PT_LO));
-  const amp = reactiveLevel;   // how loud you're singing right now — makes the line "breathe"
-
-  // octave gridlines — dashed and subtle, with a solid brighter line at A4 (your reference pitch), labeled like a real staff
-  g.font = `${10 * dpr}px -apple-system,sans-serif`; g.textBaseline = 'middle';
-  for (let s = Math.ceil(PT_LO / 12) * 12; s <= PT_HI; s += 12) {
-    const y = yFor(s);
-    g.strokeStyle = s === 0 ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.07)';
-    g.lineWidth = 1;
-    g.setLineDash(s === 0 ? [] : [2 * dpr, 5 * dpr]);
-    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
-    g.fillStyle = s === 0 ? 'rgba(255,255,255,.4)' : 'rgba(255,255,255,.22)';
-    g.fillText(NOTE_NAME(s), 6 * dpr, y - 7 * dpr);
+/* ---------- Pitch meter: a live glowing puck on a fixed track, not a scrolling graph ---------- */
+const PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
+let lastFreq = -1, smoothSemi = NaN, trendBuf = [];
+const NOTE_NAMES_FROM_C = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+function noteNameFor(semi) {   // semi is relative to A4=0; octave rolls over at C, like real sheet music
+  const r = Math.round(semi), sfc = r + 9;
+  return NOTE_NAMES_FROM_C[((sfc % 12) + 12) % 12] + (4 + Math.floor(sfc / 12));
+}
+function updatePitchMeter(semi) {
+  const puck = $('#ptPuck'), note = $('#ptNote'), hint = $('#ptHint');
+  if (Number.isNaN(semi)) {
+    puck.style.opacity = 0; hint.classList.remove('show'); note.textContent = '—';
+    trendBuf = [];
+    return;
   }
-  g.setLineDash([]);
+  puck.style.opacity = 1;
+  puck.style.left = (clamp((semi - PT_LO) / (PT_HI - PT_LO)) * 100).toFixed(1) + '%';
+  note.textContent = noteNameFor(semi);
 
-  // group into contiguous runs (breaking at silence), then smooth each run through its midpoints —
-  // turns the raw jagged samples into a fluid curve instead of a jittery polyline
-  const n = pitchHistory.length, stepX = W / PT_LEN, hue = reactiveHue.toFixed(0);
-  const runs = [[]];
-  for (let i = 0; i < n; i++) {
-    const v = pitchHistory[i];
-    if (Number.isNaN(v)) { if (runs[runs.length - 1].length) runs.push([]); continue; }
-    runs[runs.length - 1].push({ x: W - (n - i) * stepX, y: yFor(v) });
-  }
-  const path = new Path2D();
-  let lastX = W, lastY = null;
-  for (const pts of runs) {
-    if (pts.length < 2) continue;
-    path.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length - 1; i++) {
-      const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
-      path.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
-    }
-    const last = pts[pts.length - 1];
-    path.lineTo(last.x, last.y);
-    lastX = last.x; lastY = last.y;
-  }
-  // fades from transparent (oldest, left) to vivid (now, right) — a true comet tail, one gradient instead of N strokes
-  const grad = g.createLinearGradient(W - PT_LEN * stepX, 0, W, 0);
-  grad.addColorStop(0, `hsla(${hue},90%,65%,0)`);
-  grad.addColorStop(.7, `hsla(${hue},90%,65%,.55)`);
-  grad.addColorStop(1, `hsla(${hue},90%,68%,.95)`);
-
-  g.save();   // soft outer glow pass — thickness and blur both swell with how loud you're singing
-  g.shadowColor = `hsla(${hue},90%,60%,.9)`;
-  g.shadowBlur = (9 + amp * 12) * dpr;
-  g.strokeStyle = grad; g.lineWidth = (3 + amp * 3) * dpr; g.lineCap = 'round'; g.lineJoin = 'round';
-  g.stroke(path);
-  g.restore();
-  g.strokeStyle = grad; g.lineWidth = (1 + amp * 1.2) * dpr;   // crisp bright core on top of the glow
-  g.lineCap = 'round'; g.lineJoin = 'round';
-  g.stroke(path);
-
-  if (lastY != null) {   // glowing orb at the live point, pulsing bigger with volume
-    const r = (16 + amp * 14) * dpr;
-    const glow = g.createRadialGradient(lastX, lastY, 0, lastX, lastY, r);
-    glow.addColorStop(0, `hsla(${hue},95%,72%,.9)`);
-    glow.addColorStop(.5, `hsla(${hue},95%,68%,.25)`);
-    glow.addColorStop(1, `hsla(${hue},95%,68%,0)`);
-    g.fillStyle = glow;
-    g.beginPath(); g.arc(lastX, lastY, r, 0, Math.PI * 2); g.fill();
-    g.fillStyle = `hsl(${hue},95%,82%)`;
-    g.beginPath(); g.arc(lastX, lastY, (2.5 + amp * 2) * dpr, 0, Math.PI * 2); g.fill();
+  // direction hint: compare now to ~a third of a second ago, so it reads as a trend, not noise
+  trendBuf.push(semi);
+  if (trendBuf.length > 16) trendBuf.shift();
+  if (trendBuf.length >= 12) {
+    const delta = trendBuf[trendBuf.length - 1] - trendBuf[0];
+    if (delta > .7) { hint.textContent = '▲ going higher'; hint.classList.add('show'); }
+    else if (delta < -.7) { hint.textContent = '▼ going lower'; hint.classList.add('show'); }
+    else hint.classList.remove('show');
   }
 }
 
@@ -870,15 +823,13 @@ function reactiveFrame() {
       document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
     }
   }
-  // smooth the plotted pitch instead of the raw per-frame reading — autocorrelation jitters a bit
-  // (and occasionally snaps to the wrong octave for a frame), which made the line too twitchy to sing against
+  // smooth the live reading instead of jumping straight to it — autocorrelation jitters a bit
+  // (and occasionally snaps to the wrong octave for a frame), which made the puck too twitchy to sing against
   const rawSemi = (lastFreq > 0 && reactiveLevel > .08) ? 12 * Math.log2(lastFreq / 440) : NaN;
   if (Number.isNaN(rawSemi)) smoothSemi = NaN;
   else if (Number.isNaN(smoothSemi)) smoothSemi = rawSemi;   // new note after silence — snap, nothing to ease from
   else smoothSemi += (rawSemi - smoothSemi) * .18;
-  pitchHistory.push(smoothSemi);
-  if (pitchHistory.length > PT_LEN) pitchHistory.shift();
-  drawPitchTrack();
+  updatePitchMeter(smoothSemi);
 }
 async function startReactive() {
   try {
@@ -890,7 +841,7 @@ async function startReactive() {
   reactiveAnalyser.fftSize = 2048;
   reactiveBuf = new Float32Array(reactiveAnalyser.fftSize);
   src.connect(reactiveAnalyser);
-  pitchHistory = []; lastFreq = -1; smoothSemi = NaN;
+  lastFreq = -1; smoothSemi = NaN; trendBuf = [];
   $('#micBtn').classList.add('on');
   $('#pitchTrackWrap').classList.add('on');
   reactiveFrame();
