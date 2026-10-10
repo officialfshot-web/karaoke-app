@@ -748,7 +748,7 @@ $('#next').onclick = () => step(1);
 $('#vidBtn').onclick = () => { $('#vid').classList.toggle('small'); setTimeout(() => { active = -2; }, 520); };
 
 /* ---------- Reactive glow (mic-driven ambient pulse + pitch-colored lyric glow) ---------- */
-let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveBuf = null, reactiveLevel = 0, reactiveHue = 14, pitchTick = 0;
+let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveBuf = null, reactiveLevel = 0, reactiveHue = 14;
 
 // Autocorrelation pitch detector (same approach as Chrome Music Lab's pitch detector).
 // Finds the fundamental frequency of a voice in the time-domain signal — not scientifically
@@ -816,19 +816,17 @@ function reactiveFrame() {
   const rms = Math.sqrt(sum / reactiveBuf.length);
   reactiveLevel += (clamp(rms * 4) - reactiveLevel) * .25;
   document.documentElement.style.setProperty('--reactive', reactiveLevel.toFixed(3));
-  if (++pitchTick % 2 === 0) {   // autocorrelation is the expensive part — every other frame is plenty smooth
-    lastFreq = detectPitch(reactiveBuf, reactiveCtx.sampleRate);
-    if (lastFreq > 0) {
-      reactiveHue += (freqToHue(lastFreq) - reactiveHue) * .15;
-      document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
-    }
+  lastFreq = detectPitch(reactiveBuf, reactiveCtx.sampleRate);   // every frame now — halving the rate was adding real latency
+  if (lastFreq > 0) {
+    reactiveHue += (freqToHue(lastFreq) - reactiveHue) * .25;
+    document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
   }
   // smooth the live reading instead of jumping straight to it — autocorrelation jitters a bit
   // (and occasionally snaps to the wrong octave for a frame), which made the puck too twitchy to sing against
   const rawSemi = (lastFreq > 0 && reactiveLevel > .08) ? 12 * Math.log2(lastFreq / 440) : NaN;
   if (Number.isNaN(rawSemi)) smoothSemi = NaN;
   else if (Number.isNaN(smoothSemi)) smoothSemi = rawSemi;   // new note after silence — snap, nothing to ease from
-  else smoothSemi += (rawSemi - smoothSemi) * .18;
+  else smoothSemi += (rawSemi - smoothSemi) * .3;
   updatePitchMeter(smoothSemi);
 }
 async function startReactive() {
