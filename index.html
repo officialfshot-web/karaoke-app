@@ -324,6 +324,12 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 .stats b.rank,.rank{font-family:var(--disp);font-size:56px;font-weight:800;line-height:1;background:linear-gradient(180deg,#ffe27a,#ff8a2e);
   -webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 18px rgba(255,160,40,.6))}
 
+/* practice chart */
+.lchart{display:flex;align-items:flex-end;gap:3px;height:70px;margin-top:18px;max-width:340px;width:100%}
+.lbar{flex:1;min-width:4px;height:calc(var(--h) * 100%);border-radius:4px 4px 2px 2px;background:var(--c);opacity:.9;transition:transform .15s}
+.lbar:active{transform:scaleY(1.08);opacity:1}
+.lhint{font-size:12px;color:rgba(255,255,255,.6);margin-top:8px}
+
 /* voice studio + coach */
 .fxgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
 .fxcard{text-align:left;padding:14px;border-radius:16px;background:var(--card2);border:1.5px solid transparent;transition:border-color .2s,background .2s}
@@ -410,6 +416,8 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
     </div>
     <div class="video" id="vid"><div id="yt"></div></div>
     <div class="syncbar" id="syncbar"><span id="syncTxt"></span><button id="syncX">Done</button></div>
+    <div class="syncbar" id="practiceBar"><span id="practiceTxt"></span><button id="practiceX">Done</button></div>
+    <div class="syncbar" id="listenBar"><span>🎧 Listening back to your take</span><button id="listenStop">Stop</button></div>
     <div class="ptwrap" id="pitchTrackWrap">
       <canvas id="hw"></canvas>
       <div class="ptHead"><b id="ptNote">—</b></div>
@@ -441,6 +449,7 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
       <div id="eStats"></div>
       <div class="btns">
         <button class="cta" id="eNext"><i id="eBar"></i><span id="eNextT">Next song</span></button>
+        <button class="ghost tap" id="eListen">🎧 Listen back</button>
         <button class="ghost tap" id="eAgain">Sing it again</button>
       </div>
     </div>

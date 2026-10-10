@@ -348,6 +348,7 @@ function step(d) {
 function openSong(song) {
   $('#player').classList.add('on');
   hideEnd();
+  recFinish(); take = null; endListen(true); endPractice();
   cur = { song, requested: false };
   const r = store.get('recent', []).filter(x => x.id !== song.id);
   r.unshift(song); store.set('recent', r.slice(0, 20));
@@ -384,7 +385,8 @@ function onState(e) {
   const playing = e.data === YT.PlayerState.PLAYING;
   $('#pp').innerHTML = playing ? ICON.pause : ICON.play;
   $('#mPP').innerHTML = (playing ? ICON.pause : ICON.play).replace(/30/g, 24);
-  if (e.data === YT.PlayerState.ENDED) showEnd();
+  if (e.data === YT.PlayerState.ENDED) { if (listening) endListen(); else showEnd(); }
+  recOnState(e.data);
   maybeFetch();
 }
 function onErr(e) {
@@ -733,6 +735,8 @@ function tick() {
   requestAnimationFrame(tick);
   drawHighway();
   gameFrame();
+  recFrame();
+  practiceFrame();
   if (!player?.getCurrentTime) return;
   const raw = now(), dur = player.getDuration() || 0;
   const pct = dur ? raw / dur * 100 : 0;
@@ -931,7 +935,7 @@ async function startReactive() {
   reactiveFrame();
 }
 function stopReactive() {
-  if (nativeVoiceOn) { nativeVoiceOn = false; voiceMsg({ cmd: 'stop' }).catch(() => {}); }
+  if (nativeVoiceOn) { recFinish(); nativeVoiceOn = false; voiceMsg({ cmd: 'stop' }).catch(() => {}); }
   reactiveAnalyser = null;
   reactiveStream?.getTracks().forEach(t => t.stop());
   reactiveCtx?.close();
@@ -1284,13 +1288,113 @@ function gameFrame() {
 }
 const rankFor = pct => pct >= 92 ? 'S' : pct >= 80 ? 'A' : pct >= 65 ? 'B' : pct >= 45 ? 'C' : 'D';
 
+/* ---------- Record & listen back (iPhone app) ----------
+   Every time you sing with the mic on, your processed voice is recorded. The native side lines it up with the
+   song automatically (it knows the phone's input + output delay), so playback is in sync with no slider. */
+let take = null, listening = false;
+const rec = { on: false, paused: false, last: 0, startedAt: 0 };
+function recOnState(st) {
+  if (listening) return playOnState(st);
+  if (!nativeVoiceOn || !player?.getCurrentTime) return;
+  const v = player.getCurrentTime(), S = YT.PlayerState;
+  if (st === S.PLAYING) {
+    if (rec.on && !rec.paused && Math.abs(v - rec.last) > 1.2) recFinish();          // jumped: that take is over
+    if (rec.on && !rec.paused) return;
+    const append = rec.on && rec.paused && Math.abs(v - rec.last) < .6;               // resumed where we paused
+    if (rec.on && !append) recFinish();
+    voiceMsg({ cmd: 'recStart', videoTime: v, append }).then(r => {
+      if (r?.ok) { rec.on = true; rec.paused = false; rec.last = v; if (!append) rec.startedAt = v; }
+    }).catch(() => {});
+  } else if (st === S.PAUSED && rec.on && !rec.paused) {
+    rec.paused = true; rec.last = v;
+    voiceMsg({ cmd: 'recPause' }).catch(() => {});
+  } else if (st === S.ENDED) recFinish();
+}
+function recFrame() {   // keep track of where the take is, to spot seeks
+  if (rec.on && !rec.paused && player?.getPlayerState?.() === YT.PlayerState.PLAYING) {
+    const v = player.getCurrentTime();
+    if (Math.abs(v - rec.last) > 1.5) recFinish(); else rec.last = v;
+  }
+}
+function recFinish() {
+  if (!rec.on || !nativeVoiceOK()) { rec.on = false; return; }
+  rec.on = false; rec.paused = false;
+  voiceMsg({ cmd: 'recStop' }).then(r => {
+    if (r?.ok && r.duration > 4) take = { start: r.start, dur: r.duration, song: cur?.song.id };
+  }).catch(() => {});
+}
+function listenBack() {
+  if (!take) return;
+  if (nativeVoiceOn) stopReactive();
+  hideEnd(); endPractice();
+  listening = true;
+  $('#listenBar').classList.add('on');
+  player.seekTo(take.start, true); player.playVideo();
+}
+function playOnState(st) {
+  const S = YT.PlayerState;
+  if (st === S.PLAYING) voiceMsg({ cmd: 'playTake', videoTime: player.getCurrentTime() }).catch(() => {});
+  else voiceMsg({ cmd: 'stopTake' }).catch(() => {});
+}
+function endListen(quiet) {
+  if (!listening) return;
+  listening = false;
+  $('#listenBar').classList.remove('on');
+  voiceMsg({ cmd: 'stopTake' }).catch(() => {});
+  if (!quiet) { player?.pauseVideo?.(); showEnd(); }
+}
+$('#listenStop').onclick = () => endListen();
+
+/* ---------- Practice mode: loop one line until you nail it ---------- */
+let practice = null;
+function lineChart() {
+  const ls = lines.map((L, i) => ({ L, i })).filter(x => x.L.words?.some(w => w.done));
+  if (ls.length < 3) return '';
+  const bars = ls.map(({ L, i }) => {
+    const done = L.words.filter(w => w.done).length, hit = L.words.filter((w, j) => L.spans[j]?.classList.contains('hit')).length;
+    const r = done ? hit / done : 0, col = r >= .8 ? '#ffd45a' : r >= .5 ? 'var(--acc)' : '#ff5470';
+    return `<button class="lbar" data-line="${i}" title="${esc(L.text)}" style="--h:${Math.max(.12, r)};--c:${col}"></button>`;
+  }).join('');
+  return `<div class="lchart">${bars}</div><p class="lhint">Each bar is a line. Tap a short one to practice it.</p>`;
+}
+function startPractice(i) {
+  const L = lines[i]; if (!L) return;
+  const end = L.end ?? lines[i + 1]?.t ?? L.t + 4;
+  practice = { i, a: Math.max(0, L.t - 1.5), b: end + .4, loops: 0 };
+  hideEnd(); endListen(true);
+  $('#practiceTxt').textContent = `🔁 Practicing: “${L.text.length > 38 ? L.text.slice(0, 36) + '…' : L.text}”`;
+  $('#practiceBar').classList.add('on');
+  resetLine(L);
+  player.seekTo(videoTimeFor(practice.a), true); player.playVideo();
+}
+function resetLine(L) {
+  L.rated = false;
+  L.words?.forEach((w, j) => { w.done = false; w.f = 0; w.v = 0; L.spans[j]?.classList.remove('hit'); });
+}
+function practiceFrame() {
+  if (!practice || !player?.getCurrentTime || player.getPlayerState?.() !== YT.PlayerState.PLAYING) return;
+  const raw = now(), t = raw + deltaAt(raw);
+  if (t > practice.b) {
+    practice.loops++;
+    resetLine(lines[practice.i]);
+    player.seekTo(videoTimeFor(practice.a), true);
+  }
+}
+function endPractice() {
+  if (!practice) return;
+  practice = null;
+  $('#practiceBar').classList.remove('on');
+}
+$('#practiceX').onclick = () => { endPractice(); player?.pauseVideo?.(); showEnd(); };
+
 /* ---------- End of song ---------- */
 const CHEERS = ['Mic drop.', 'Encore!', 'Nailed it.', 'Legendary.', 'Crowd goes wild.'];
 function showEnd() {
   const n = names(cur.song.title, cur.song.channel);
   $('#eH').textContent = CHEERS[(Math.random() * CHEERS.length) | 0];
   $('#eP').textContent = `You just sang ${n.track}`;
-  $('#eStats').innerHTML = coachReport();
+  $('#eStats').innerHTML = coachReport() + lineChart();
+  $('#eListen').style.display = take && nativeVoiceOK() ? '' : 'none';
   const nx = queue[qi + 1];
   $('#eNext').style.display = nx ? '' : 'none';
   if (nx) {
@@ -1310,6 +1414,8 @@ function showEnd() {
 }
 function hideEnd() { clearTimeout(endTimer); $('#end').classList.remove('on'); }
 $('#eNext').onclick = () => step(1);
+$('#eListen').onclick = () => listenBack();
+$('#eStats').onclick = e => { const b = e.target.closest('[data-line]'); if (b) startPractice(+b.dataset.line); };
 $('#eAgain').onclick = () => { hideEnd(); resetCoach(); document.querySelectorAll('.w.hit').forEach(w => w.classList.remove('hit')); player.seekTo(0, true); player.playVideo(); };
 
 addEventListener('resize', () => { active = -2; });

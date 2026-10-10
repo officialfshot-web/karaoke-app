@@ -55,6 +55,7 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
+    @MainActor
     final class Coordinator: NSObject, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, ASWebAuthenticationPresentationContextProviding {
         weak var webView: WKWebView?
         var session: ASWebAuthenticationSession?
@@ -78,7 +79,7 @@ struct WebView: UIViewRepresentable {
             session = ASWebAuthenticationSession(url: c.url!, callbackURLScheme: scheme) { [weak self] url, _ in
                 guard let url, let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "code" })?.value else { return }
-                self?.exchange(code: code, verifier: verifier, redirect: redirect)
+                Task { @MainActor in self?.exchange(code: code, verifier: verifier, redirect: redirect) }
             }
             session?.presentationContextProvider = self
             session?.start()
@@ -99,12 +100,13 @@ struct WebView: UIViewRepresentable {
             }
             if url.host == "music.youtube.com" { req.setValue("https://music.youtube.com", forHTTPHeaderField: "Origin") }
             for (k, v) in d["headers"] as? [String: String] ?? [:] { req.setValue(v, forHTTPHeaderField: k) }
-            URLSession.shared.dataTask(with: req) { data, _, err in
-                let text = data.map { String(decoding: $0, as: UTF8.self) }
-                DispatchQueue.main.async {
-                    if let text { replyHandler(text, nil) } else { replyHandler(nil, err?.localizedDescription ?? "failed") }
-                }
-            }.resume()
+            let request = req
+            Task { @MainActor in
+                do {
+                    let (data, _) = try await URLSession.shared.data(for: request)
+                    replyHandler(String(decoding: data, as: UTF8.self), nil)
+                } catch { replyHandler(nil, error.localizedDescription) }
+            }
         }
 
         // The page's mic button / voice studio sheet talk to the native vocal chain through this.
@@ -117,6 +119,11 @@ struct WebView: UIViewRepresentable {
                 case "start": reply(await v.start(), nil)
                 case "stop": v.stop(); reply(["ok": true], nil)
                 case "reset": v.resetSafety(); reply(["ok": true, "tier": v.tier], nil)
+                case "recStart": reply(v.recStart(videoTime: d["videoTime"] as? Double ?? 0, append: d["append"] as? Bool ?? false), nil)
+                case "recPause": v.recPause(); reply(["ok": true], nil)
+                case "recStop": reply(v.recStop(), nil)
+                case "playTake": reply(v.playTake(videoTime: d["videoTime"] as? Double ?? 0), nil)
+                case "stopTake": v.stopTake(); reply(["ok": true], nil)
                 default: reply(["ok": true], nil)
                 }
             }
@@ -133,14 +140,14 @@ struct WebView: UIViewRepresentable {
                 .init(name: "grant_type", value: "authorization_code"),
             ]
             req.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-                guard let data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let request = req
+            Task { @MainActor [weak self] in
+                guard let (data, _) = try? await URLSession.shared.data(for: request),
+                      let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let tok = j["access_token"] as? String else { return }
                 let secs = j["expires_in"] as? Int ?? 3600
-                DispatchQueue.main.async {
-                    self?.webView?.evaluateJavaScript("window.nativeToken(\"\(tok)\", \(secs))")
-                }
-            }.resume()
+                self?.webView?.evaluateJavaScript("window.nativeToken(\"\(tok)\", \(secs))")
+            }
         }
 
         static func b64(_ d: Data) -> String {
@@ -148,8 +155,8 @@ struct WebView: UIViewRepresentable {
                 .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
         }
 
-        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-            webView?.window ?? ASPresentationAnchor()
+        nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+            MainActor.assumeIsolated { webView?.window ?? ASPresentationAnchor() }   // always asked on the main thread
         }
 
         // Lets the page's mic-reactive glow (getUserMedia) work — without this iOS silently denies it.
@@ -298,8 +305,45 @@ final class VoiceEngine {
         }
     }
 
+    // MARK: Record & listen back
+    // Your processed voice is written to a file while you sing. To play it back in time with the song we need
+    // to know where each sample sits on the video's clock: you sing to what you *hear* (output delay) and the mic
+    // adds its own (input delay). iOS reports both, so the take is lined up automatically, with no sync slider.
+    private var take: (url: URL, start: Double, latency: Double)?
+    private let takePlayer = TakePlayer()
+
+    func recStart(videoTime: Double, append: Bool) -> [String: Any] {
+        guard let c = chain else { return ["ok": false, "error": "Mic isn’t on"] }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("take.caf")
+        do {
+            if append, take != nil, c.isRecordingFileOpen {
+                c.resumeRecording()
+            } else {
+                try c.startRecording(url: url)
+                let s = AVAudioSession.sharedInstance()
+                take = (url, videoTime, s.inputLatency + s.outputLatency + s.ioBufferDuration)
+            }
+            return ["ok": true]
+        } catch { return ["ok": false, "error": error.localizedDescription] }
+    }
+    func recPause() { chain?.pauseRecording() }
+    func recStop() -> [String: Any] {
+        let secs = chain?.finishRecording() ?? 0
+        guard let t = take, secs > 0 else { return ["ok": false] }
+        return ["ok": true, "start": t.start, "duration": secs, "latency": t.latency]
+    }
+    func playTake(videoTime: Double) -> [String: Any] {
+        guard let t = take else { return ["ok": false, "error": "No take recorded yet"] }
+        do {
+            try takePlayer.play(url: t.url, from: videoTime - t.start + t.latency)
+            return ["ok": true]
+        } catch { return ["ok": false, "error": error.localizedDescription] }
+    }
+    func stopTake() { takePlayer.stop() }
+
     func stop() {
         running = false
+        _ = chain?.finishRecording()
         chain?.engine.stop(); chain = nil
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
     }
@@ -491,6 +535,34 @@ nonisolated final class VoiceChain: @unchecked Sendable {
         AudioUnitSetParameter(u.audioUnit, id, kAudioUnitScope_Global, 0, v, 0)
     }
 
+    // recording: a tap on the final output (what you hear), written straight to disk
+    private var recFile: AVAudioFile?
+    private var tapOn = false
+    var isRecordingFileOpen: Bool { recFile != nil }
+    func startRecording(url: URL) throws {
+        _ = finishRecording()
+        try? FileManager.default.removeItem(at: url)
+        let fmt = out.outputFormat(forBus: 0)
+        recFile = try AVAudioFile(forWriting: url, settings: fmt.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        resumeRecording()
+    }
+    func resumeRecording() {
+        guard recFile != nil, !tapOn else { return }
+        out.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buf, _ in try? self?.recFile?.write(from: buf) }
+        tapOn = true
+    }
+    func pauseRecording() {
+        if tapOn { out.removeTap(onBus: 0); tapOn = false }
+    }
+    /// Closes the file; returns its length in seconds.
+    func finishRecording() -> Double {
+        pauseRecording()
+        guard let f = recFile else { return 0 }
+        let secs = Double(f.length) / f.processingFormat.sampleRate
+        recFile = nil
+        return secs
+    }
+
     private func collect(_ p: UnsafePointer<Float>, _ n: Int) {
         for i in 0..<n { ring[ringPos] = p[i]; ringPos = (ringPos + 1) & 4095 }
         fresh += n
@@ -539,4 +611,30 @@ nonisolated final class VoiceChain: @unchecked Sendable {
         }
         return -1
     }
+}
+
+/// Plays a recorded take back on its own little engine, starting at a given point in the file.
+@MainActor
+final class TakePlayer {
+    private let engine = AVAudioEngine()
+    private let node = AVAudioPlayerNode()
+    private var attached = false
+
+    func play(url: URL, from seconds: Double) throws {
+        let file = try AVAudioFile(forReading: url)
+        let s = AVAudioSession.sharedInstance()
+        try s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try s.setActive(true)
+        if !attached { engine.attach(node); attached = true }
+        node.stop()
+        engine.disconnectNodeOutput(node)
+        engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
+        if !engine.isRunning { try engine.start() }
+        let start = AVAudioFramePosition(max(0, seconds) * file.processingFormat.sampleRate)
+        guard start < file.length else { return }
+        node.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(file.length - start), at: nil)
+        node.play()
+    }
+
+    func stop() { node.stop() }
 }

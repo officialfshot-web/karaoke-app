@@ -43,6 +43,7 @@ jobs:
           xcodebuild -project Karaoke.xcodeproj -scheme Karaoke -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO $FLAGS build | tee build.log | grep -E 'error:|warning: .*(concurren|actor|Sendable)|BUILD' || true
+          grep -E '(error|warning): ' build.log | grep -vE 'deprecated|Node' | sort -u | head -40 | sed -E 's/^(.*): (error|warning): (.*)$/::\2 file=\1::\3/' || true
           grep -q '\*\* BUILD SUCCEEDED \*\*' build.log
       - name: Package unsigned IPA
         if: matrix.mode == 'swift6-strict'
