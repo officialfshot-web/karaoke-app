@@ -49,7 +49,15 @@ struct WebView: UIViewRepresentable {
             guard let data = try? JSONSerialization.data(withJSONObject: info), let json = String(data: data, encoding: .utf8) else { return }
             wv?.evaluateJavaScript("window.nativeVoiceRoute&&window.nativeVoiceRoute(\(json))")
         }
-        wv.load(URLRequest(url: appURL))
+        // The web app is hosted rather than bundled, and GitHub Pages serves it with a 10-minute
+        // cache header. iOS keeps an app's data container across reinstalls, so that stale copy
+        // outlived app updates and kept serving old JS long after a deploy. Drop the HTTP caches on
+        // launch, then force a revalidated load. Deliberately only the disk/memory caches — not
+        // cookies or local storage, which hold the sign-in token and per-song sync offsets.
+        let httpCaches: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache]
+        WKWebsiteDataStore.default().removeData(ofTypes: httpCaches, modifiedSince: .distantPast) {
+            wv.load(URLRequest(url: appURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        }
         return wv
     }
 
@@ -146,7 +154,8 @@ struct WebView: UIViewRepresentable {
                       let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let tok = j["access_token"] as? String else { return }
                 let secs = j["expires_in"] as? Int ?? 3600
-                self?.webView?.evaluateJavaScript("window.nativeToken(\"\(tok)\", \(secs))")
+                // inside an async Task this resolves to the async throwing overload, so it needs try/await
+                try? await self?.webView?.evaluateJavaScript("window.nativeToken(\"\(tok)\", \(secs))")
             }
         }
 
