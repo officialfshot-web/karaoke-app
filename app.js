@@ -23,9 +23,9 @@ const ICON = {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 let toastT;
-function toast(msg) {
+function toast(msg, ms = 3200) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('on');
-  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 3200);
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), ms);
 }
 
 /* ---------- Names: turn YouTube titles into "Song" + "Artist" ---------- */
@@ -908,10 +908,10 @@ const voiceMsg = m => window.webkit.messageHandlers.voice.postMessage({ ...m, ..
 async function startReactive() {
   if (nativeVoiceOK()) {
     const r = await voiceMsg({ cmd: 'start' }).catch(e => ({ ok: false, error: String(e) }));
-    if (!r?.ok) return toast(r?.error || 'Couldn’t start the mic');
+    if (!r?.ok) { $('#fxRoute').textContent = '⚠️ ' + (r?.error || 'Couldn’t start the mic'); return toast(r?.error || 'Couldn’t start the mic', 7000); }
     nativeVoiceOn = true;
     lastFreq = -1; smoothSemi = NaN; trendBuf = [];
-    toast(r.route || 'Mic on');
+    toast(r.notice || r.route || 'Mic on', r.notice ? 6000 : 3200);
     $('#micBtn').classList.add('on');
     $('#pitchTrackWrap').classList.add('on');
     return;
@@ -1158,6 +1158,12 @@ $('#fxVerb').oninput = () => { fx.reverb = $('#fxVerb').value / 100; saveFx(); }
 $('#fxEcho').oninput = () => { fx.echo = $('#fxEcho').value / 100; saveFx(); };
 const fmtDb = v => (v > 0 ? '+' : '') + (+v).toFixed(v % 1 ? 1 : 0);
 $('#fxEq').oninput = e => { const i = e.target.dataset.eq; if (i == null) return; fx.eq[i] = +e.target.value; $('#eqv' + i).textContent = fmtDb(fx.eq[i]); saveFx(); };
+$('#fxReset').onclick = async () => {
+  if (!nativeVoiceOK()) return;
+  if (nativeVoiceOn) stopReactive();
+  await voiceMsg({ cmd: 'reset' }).catch(() => {});
+  toast('Voice engine reset to full studio. Tap the mic to start.');
+};
 $('#fxEqReset').onclick = () => { fx.eq = [0, 0, 0, 0, 0]; renderFx(); saveFx(); };
 window.nativeVoiceRoute = r => {
   $('#fxRoute').textContent = r.error ? `⚠️ ${r.error}` : !r.running ? 'Tap the mic button to start.' : r.summary;

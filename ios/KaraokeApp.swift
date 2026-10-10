@@ -110,12 +110,15 @@ struct WebView: UIViewRepresentable {
         // The page's mic button / voice studio sheet talk to the native vocal chain through this.
         func handleVoice(_ body: Any, _ reply: @escaping (Any?, String?) -> Void) {
             guard let d = body as? [String: Any], let cmd = d["cmd"] as? String else { return reply(nil, "bad message") }
-            let v = VoiceEngine.shared
-            v.configure(d)
-            switch cmd {
-            case "start": v.start { ok, err in reply(["ok": ok, "error": err ?? "", "route": v.routeSummary], nil) }
-            case "stop": v.stop(); reply(["ok": true], nil)
-            default: reply(["ok": true], nil)
+            Task { @MainActor in
+                let v = VoiceEngine.shared
+                v.configure(d)
+                switch cmd {
+                case "start": reply(await v.start(), nil)
+                case "stop": v.stop(); reply(["ok": true], nil)
+                case "reset": v.resetSafety(); reply(["ok": true, "tier": v.tier], nil)
+                default: reply(["ok": true], nil)
+                }
             }
         }
 
@@ -174,35 +177,33 @@ struct WebView: UIViewRepresentable {
 /// Live vocal chain, built from Apple's pro audio units:
 /// mic → preset EQ (low cut, de-mud, presence, air) → your EQ → compressor → [dry + doubler] → echo → reverb → limiter → your ears.
 /// Full-quality music audio session: no voice processing ("phone call" mode) anywhere.
-/// It also measures loudness and pitch (YIN) for the pitch meter and the singing coach.
+/// It also measures loudness and pitch (YIN) for the note lane and the singing coach.
+///
+/// Crash safety: audio-graph mistakes on iOS kill the app instantly (they can't be caught), so the engine
+/// remembers that it was starting. If the app died mid-start, the next start drops to a simpler "safe" chain,
+/// and after that to "off", instead of crashing again. `resetSafety` goes back to the full studio.
+@MainActor
 final class VoiceEngine {
     static let shared = VoiceEngine()
 
     var onFrame: ((Float, Float) -> Void)?          // (loudness, pitch in Hz or -1)
     var onRoute: (([String: Any]) -> Void)?
 
-    struct Preset {
-        var lowCut: Float, mud: Float, mudHz: Float, presence: Float, presenceHz: Float, air: Float
-        var threshold: Float, headroom: Float, makeup: Float
-        var double: Float
-        var room: AVAudioUnitReverbPreset, roomWet: Float
-        var echoTime: Double, echoFeedback: Float, echoWet: Float
-    }
-    static let presets: [String: Preset] = [
-        "clean":     Preset(lowCut: 80, mud: -1, mudHz: 300, presence: 1, presenceHz: 4000, air: 1, threshold: -16, headroom: 8, makeup: 2,
-                            double: 0, room: .mediumRoom, roomWet: 6, echoTime: 0.1, echoFeedback: 0, echoWet: 0),
-        "studio":    Preset(lowCut: 90, mud: -2.5, mudHz: 320, presence: 3, presenceHz: 4500, air: 3, threshold: -22, headroom: 6, makeup: 5,
-                            double: 0, room: .plate, roomWet: 14, echoTime: 0.12, echoFeedback: 0, echoWet: 0),
-        "pop":       Preset(lowCut: 100, mud: -3, mudHz: 300, presence: 4, presenceHz: 3200, air: 4, threshold: -26, headroom: 4, makeup: 7,
-                            double: 0.35, room: .plate, roomWet: 20, echoTime: 0.18, echoFeedback: 15, echoWet: 10),
-        "rnb":       Preset(lowCut: 80, mud: 1, mudHz: 200, presence: 2, presenceHz: 5000, air: 4, threshold: -28, headroom: 5, makeup: 7,
-                            double: 0.25, room: .mediumHall, roomWet: 22, echoTime: 0.27, echoFeedback: 20, echoWet: 10),
-        "arena":     Preset(lowCut: 90, mud: -2, mudHz: 250, presence: 2, presenceHz: 3500, air: 2, threshold: -20, headroom: 6, makeup: 5,
-                            double: 0.15, room: .largeHall2, roomWet: 32, echoTime: 0.32, echoFeedback: 25, echoWet: 14),
-        "vintage":   Preset(lowCut: 120, mud: 0, mudHz: 300, presence: 2, presenceHz: 2500, air: -2, threshold: -18, headroom: 7, makeup: 4,
-                            double: 0, room: .plate, roomWet: 26, echoTime: 0.11, echoFeedback: 0, echoWet: 18),
-        "cathedral": Preset(lowCut: 90, mud: -2, mudHz: 300, presence: 2, presenceHz: 4000, air: 2, threshold: -20, headroom: 6, makeup: 5,
-                            double: 0, room: .cathedral, roomWet: 38, echoTime: 0.2, echoFeedback: 0, echoWet: 0),
+    static let presets: [String: VoicePreset] = [
+        "clean":     VoicePreset(lowCut: 80, mud: -1, mudHz: 300, presence: 1, presenceHz: 4000, air: 1, threshold: -16, headroom: 8, makeup: 2,
+                                 double: 0, room: .mediumRoom, roomWet: 6, echoTime: 0.1, echoFeedback: 0, echoWet: 0),
+        "studio":    VoicePreset(lowCut: 90, mud: -2.5, mudHz: 320, presence: 3, presenceHz: 4500, air: 3, threshold: -22, headroom: 6, makeup: 5,
+                                 double: 0, room: .plate, roomWet: 14, echoTime: 0.12, echoFeedback: 0, echoWet: 0),
+        "pop":       VoicePreset(lowCut: 100, mud: -3, mudHz: 300, presence: 4, presenceHz: 3200, air: 4, threshold: -26, headroom: 4, makeup: 7,
+                                 double: 0.35, room: .plate, roomWet: 20, echoTime: 0.18, echoFeedback: 15, echoWet: 10),
+        "rnb":       VoicePreset(lowCut: 80, mud: 1, mudHz: 200, presence: 2, presenceHz: 5000, air: 4, threshold: -28, headroom: 5, makeup: 7,
+                                 double: 0.25, room: .mediumHall, roomWet: 22, echoTime: 0.27, echoFeedback: 20, echoWet: 10),
+        "arena":     VoicePreset(lowCut: 90, mud: -2, mudHz: 250, presence: 2, presenceHz: 3500, air: 2, threshold: -20, headroom: 6, makeup: 5,
+                                 double: 0.15, room: .largeHall2, roomWet: 32, echoTime: 0.32, echoFeedback: 25, echoWet: 14),
+        "vintage":   VoicePreset(lowCut: 120, mud: 0, mudHz: 300, presence: 2, presenceHz: 2500, air: -2, threshold: -18, headroom: 7, makeup: 4,
+                                 double: 0, room: .plate, roomWet: 26, echoTime: 0.11, echoFeedback: 0, echoWet: 18),
+        "cathedral": VoicePreset(lowCut: 90, mud: -2, mudHz: 300, presence: 2, presenceHz: 4000, air: 2, threshold: -20, headroom: 6, makeup: 5,
+                                 double: 0, room: .cathedral, roomWet: 38, echoTime: 0.2, echoFeedback: 0, echoWet: 0),
     ]
 
     // settings from the page
@@ -210,29 +211,127 @@ final class VoiceEngine {
     private var monitor: Float = 0.9, reverbAmount: Float = 1, echoAmount: Float = 1
     private var userEQ: [Float] = [0, 0, 0, 0, 0]          // bass, body, mid, presence, air (dB)
 
-    private var chain: Chain?
+    private var chain: VoiceChain?
     private(set) var running = false
 
+    // crash memory
+    private let defaults = UserDefaults.standard
+    private(set) var tier: Int                // 0 = full studio, 1 = safe chain, 2 = off
+    private var crashedLastTime = false
+
     private init() {
-        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.applyRoute()
+        tier = defaults.integer(forKey: "voice.tier")
+        if defaults.bool(forKey: "voice.starting") {          // we died while starting the mic last time
+            tier = min(2, tier + 1); crashedLastTime = true
+            defaults.set(tier, forKey: "voice.tier"); defaults.set(false, forKey: "voice.starting")
         }
-        NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] _ in
-            self?.rebuild()   // headphones plugged/unplugged can change the sample rate
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in VoiceEngine.shared.applyRoute() }
         }
-        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+        nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { _ in
+            Task { @MainActor in VoiceEngine.shared.rebuild() }   // headphones in/out can change the sample rate
+        }
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
             // a call, Siri, another app…: when it's over, bring the mic back
-            guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-            try? AVAudioSession.sharedInstance().setActive(true)
-            self?.rebuild()
+            let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            guard raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended else { return }
+            Task { @MainActor in
+                try? AVAudioSession.sharedInstance().setActive(true)
+                VoiceEngine.shared.rebuild()
+            }
         }
+    }
+
+    func configure(_ d: [String: Any]) {
+        if let p = d["preset"] as? String, Self.presets[p] != nil { presetName = p }
+        if let m = d["monitor"] as? Double { monitor = Float(max(0, min(1.5, m))) }
+        if let r = d["reverb"] as? Double { reverbAmount = Float(max(0, min(2, r))) }
+        if let e = d["echo"] as? Double { echoAmount = Float(max(0, min(2, e))) }
+        if let g = d["eq"] as? [Double], g.count == 5 { userEQ = g.map { Float(max(-12, min(12, $0))) } }
+        applyPreset(); applyRoute()
+    }
+
+    func resetSafety() {
+        tier = 0; crashedLastTime = false
+        defaults.set(0, forKey: "voice.tier"); defaults.set(false, forKey: "voice.starting")
+    }
+
+    /// Every check that can fail is done up front and turned into a message, so nothing here crashes the app.
+    func start() async -> [String: Any] {
+        func fail(_ msg: String) -> [String: Any] { ["ok": false, "error": msg, "tier": tier] }
+        guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil else {
+            return fail("This build is missing the microphone permission. In Xcode: Karaoke target → Info → + → “Privacy - Microphone Usage Description”, then press ▶.")
+        }
+        guard tier < 2 else {
+            return fail("Live voice was turned off because it crashed twice. Tap “Reset voice engine” in Voice studio to try again.")
+        }
+        let session = AVAudioSession.sharedInstance()
+        if session.recordPermission == .denied {
+            return fail("Microphone is off for Karaoke. Turn it on in Settings → Karaoke → Microphone.")
+        }
+        guard await Self.askMicPermission() else {
+            return fail("Microphone is off for Karaoke. Turn it on in Settings → Karaoke → Microphone.")
+        }
+        do {
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
+            try? session.setPreferredSampleRate(48000)
+            try? session.setPreferredIOBufferDuration(0.005)   // ~5 ms buffers: low enough to hear yourself without echo
+            try session.setActive(true)
+        } catch { return fail("Couldn’t open the audio system: \(error.localizedDescription)") }
+        guard session.isInputAvailable else { return fail("No microphone is available right now.") }
+
+        do { try startChain() } catch {
+            return fail("Couldn’t start the mic: \(error.localizedDescription)")
+        }
+        running = true
+        var r: [String: Any] = ["ok": true, "route": routeSummary, "tier": tier]
+        if crashedLastTime { r["notice"] = "The voice studio crashed last time, so it’s running in safe mode (fewer effects)." }
+        crashedLastTime = false
+        return r
+    }
+
+    private static func askMicPermission() async -> Bool {
+        if #available(iOS 17.0, *) { return await AVAudioApplication.requestRecordPermission() }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            AVAudioSession.sharedInstance().requestRecordPermission { @Sendable granted in cont.resume(returning: granted) }
+        }
+    }
+
+    func stop() {
+        running = false
+        chain?.engine.stop(); chain = nil
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
     }
 
     private func rebuild() {
         guard running else { return }
         chain?.engine.stop(); chain = nil
-        do { try startChain() } catch { onRoute?(["running": false, "error": error.localizedDescription]) }
+        do { try startChain() } catch {
+            running = false
+            onRoute?(["running": false, "error": "The mic stopped: \(error.localizedDescription). Tap the mic to restart."])
+        }
+    }
+
+    private func startChain() throws {
+        // mark "starting" on disk before touching the audio graph; cleared once it has run for a few seconds
+        defaults.set(true, forKey: "voice.starting"); defaults.synchronize()
+        let c = try VoiceChain(safe: tier >= 1) { rms, hz in
+            Task { @MainActor in VoiceEngine.shared.onFrame?(rms, hz) }
+        }
+        chain = c
+        applyPreset(); applyRoute()
+        try c.engine.start()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if VoiceEngine.shared.running { UserDefaults.standard.set(false, forKey: "voice.starting") }
+        }
+    }
+
+    private func applyPreset() {
+        guard let c = chain, let p = Self.presets[presetName] else { return }
+        c.apply(p, reverbAmount: reverbAmount, echoAmount: echoAmount)
+        c.applyUserEQ(userEQ)
     }
 
     private var outputs: [AVAudioSession.Port] { AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType } }
@@ -244,52 +343,6 @@ final class VoiceEngine {
         return "🔊 Hearing yourself on the speaker. Lower “Your voice” if it rings"
     }
 
-    func configure(_ d: [String: Any]) {
-        if let p = d["preset"] as? String, Self.presets[p] != nil { presetName = p }
-        if let m = d["monitor"] as? Double { monitor = Float(m) }
-        if let r = d["reverb"] as? Double { reverbAmount = Float(r) }
-        if let e = d["echo"] as? Double { echoAmount = Float(e) }
-        if let g = d["eq"] as? [Double], g.count == 5 { userEQ = g.map { Float(max(-12, min(12, $0))) } }
-        applyPreset(); applyRoute()
-    }
-
-    func start(_ done: @escaping (Bool, String?) -> Void) {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            DispatchQueue.main.async {
-                guard granted else { return done(false, "Microphone is off for Karaoke. Turn it on in Settings → Karaoke.") }
-                do {
-                    let s = AVAudioSession.sharedInstance()
-                    try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
-                    try? s.setPreferredSampleRate(48000)
-                    try? s.setPreferredIOBufferDuration(0.005)   // ~5 ms buffers: low enough to hear yourself without echo
-                    try s.setActive(true)
-                    try self.startChain()
-                    self.running = true
-                    done(true, nil)
-                } catch { done(false, error.localizedDescription) }
-            }
-        }
-    }
-
-    func stop() {
-        running = false
-        chain?.engine.stop(); chain = nil
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
-    }
-
-    private func startChain() throws {
-        let c = try Chain { [weak self] rms, hz in self?.onFrame?(rms, hz) }
-        chain = c
-        applyPreset(); applyRoute()
-        try c.engine.start()
-    }
-
-    private func applyPreset() {
-        guard let c = chain, let p = Self.presets[presetName] else { return }
-        c.apply(p, reverbAmount: reverbAmount, echoAmount: echoAmount)
-        c.applyUserEQ(userEQ)
-    }
-
     // Always play your voice back. Through open speakers it starts a bit quieter so it doesn't ring.
     private func applyRoute() {
         let outs = outputs
@@ -297,53 +350,83 @@ final class VoiceEngine {
         let bluetooth = outs.contains { [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP].contains($0) }
         let car = outs.contains(.carAudio)
         chain?.out.outputVolume = (wired || bluetooth) ? monitor : monitor * 0.6
-        onRoute?(["wired": wired, "bluetooth": bluetooth, "car": car, "hearing": running, "running": running, "summary": routeSummary])
+        onRoute?(["wired": wired, "bluetooth": bluetooth, "car": car, "hearing": running, "running": running,
+                  "summary": routeSummary, "tier": tier])
+    }
+}
+
+nonisolated struct VoicePreset: Sendable {
+    var lowCut: Float, mud: Float, mudHz: Float, presence: Float, presenceHz: Float, air: Float
+    var threshold: Float, headroom: Float, makeup: Float
+    var double: Float
+    var room: AVAudioUnitReverbPreset, roomWet: Float
+    var echoTime: Double, echoFeedback: Float, echoWet: Float
+}
+
+/// One engine + its nodes. Rebuilt from scratch whenever the audio hardware changes.
+/// Not tied to the main thread: parts of it run on the real-time audio thread.
+nonisolated final class VoiceChain: @unchecked Sendable {
+    let engine = AVAudioEngine()
+    let inMix = AVAudioMixerNode()
+    let eq = AVAudioUnitEQ(numberOfBands: 4)
+    let userEQ = AVAudioUnitEQ(numberOfBands: 5)
+    let comp = AVAudioUnitEffect(audioComponentDescription: VoiceChain.apple(kAudioUnitSubType_DynamicsProcessor))
+    let dblPitch = AVAudioUnitTimePitch()
+    let dblDelay = AVAudioUnitDelay()
+    let dblLevel = AVAudioMixerNode()
+    let voiceBus = AVAudioMixerNode()
+    let echo = AVAudioUnitDelay()
+    let reverb = AVAudioUnitReverb()
+    let limiter = AVAudioUnitEffect(audioComponentDescription: VoiceChain.apple(kAudioUnitSubType_PeakLimiter))
+    let out = AVAudioMixerNode()
+    let safe: Bool
+    private var sink: AVAudioSinkNode?
+
+    // pitch analysis: keep the last 4096 mic samples, analyse 2048 of them every 1024 new samples (~21 ms)
+    private var ring = [Float](repeating: 0, count: 4096)
+    private var ringPos = 0, fresh = 0
+    private let analysisQ = DispatchQueue(label: "karaoke.voice.analysis")
+    private var sampleRate: Double = 48000
+    private let report: @Sendable (Float, Float) -> Void
+
+    static func apple(_ sub: OSType) -> AudioComponentDescription {
+        AudioComponentDescription(componentType: kAudioUnitType_Effect, componentSubType: sub,
+                                  componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
     }
 
-    /// One engine + its nodes. Rebuilt from scratch whenever the audio hardware changes.
-    final class Chain {
-        let engine = AVAudioEngine()
-        let inMix = AVAudioMixerNode()
-        let eq = AVAudioUnitEQ(numberOfBands: 4)
-        let userEQ = AVAudioUnitEQ(numberOfBands: 5)
-        let comp = AVAudioUnitEffect(audioComponentDescription: Chain.apple(kAudioUnitSubType_DynamicsProcessor))
-        let dblPitch = AVAudioUnitTimePitch()
-        let dblDelay = AVAudioUnitDelay()
-        let dblLevel = AVAudioMixerNode()
-        let voiceBus = AVAudioMixerNode()
-        let echo = AVAudioUnitDelay()
-        let reverb = AVAudioUnitReverb()
-        let limiter = AVAudioUnitEffect(audioComponentDescription: Chain.apple(kAudioUnitSubType_PeakLimiter))
-        let out = AVAudioMixerNode()
-        private var sink: AVAudioSinkNode!
-
-        // pitch analysis: keep the last 4096 mic samples, analyse 2048 of them every 1024 new samples (~21 ms)
-        private var ring = [Float](repeating: 0, count: 4096)
-        private var ringPos = 0, fresh = 0
-        private let analysisQ = DispatchQueue(label: "karaoke.voice.analysis")
-        private var sampleRate: Double = 48000
-        private let report: (Float, Float) -> Void
-
-        static func apple(_ sub: OSType) -> AudioComponentDescription {
-            AudioComponentDescription(componentType: kAudioUnitType_Effect, componentSubType: sub,
-                                      componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
+    /// safe = a minimal chain (mic → EQ → your EQ → reverb → out) with a plain tap for pitch:
+    /// no doubler, compressor, limiter or real-time sink, the parts most likely to misbehave on unusual hardware.
+    init(safe: Bool, report: @escaping @Sendable (Float, Float) -> Void) throws {
+        self.safe = safe
+        self.report = report
+        let input = engine.inputNode
+        let inFmt = input.outputFormat(forBus: 0)
+        guard inFmt.sampleRate > 0, inFmt.channelCount > 0,
+              let mono = AVAudioFormat(standardFormatWithSampleRate: inFmt.sampleRate, channels: 1) else {
+            throw NSError(domain: "Karaoke", code: 1, userInfo: [NSLocalizedDescriptionKey: "no usable microphone input"])
         }
+        sampleRate = inFmt.sampleRate
 
-        init(report: @escaping (Float, Float) -> Void) throws {
-            self.report = report
-            let input = engine.inputNode
-            let inFmt = input.outputFormat(forBus: 0)
-            guard inFmt.sampleRate > 0, inFmt.channelCount > 0,
-                  let mono = AVAudioFormat(standardFormatWithSampleRate: inFmt.sampleRate, channels: 1) else {
-                throw NSError(domain: "Karaoke", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone available."])
+        if safe {
+            for n in [inMix, eq, userEQ, reverb, out] as [AVAudioNode] { engine.attach(n) }
+            engine.connect(input, to: inMix, format: inFmt)
+            engine.connect(inMix, to: eq, format: mono)
+            engine.connect(eq, to: userEQ, format: mono)
+            engine.connect(userEQ, to: reverb, format: mono)
+            engine.connect(reverb, to: out, format: mono)
+            engine.connect(out, to: engine.mainMixerNode, format: mono)
+            inMix.installTap(onBus: 0, bufferSize: 2048, format: mono) { [weak self] buf, _ in
+                guard let self, let p = buf.floatChannelData?[0] else { return }
+                self.collect(p, Int(buf.frameLength))
             }
-            sampleRate = inFmt.sampleRate
-
-            sink = AVAudioSinkNode { [weak self] _, frames, abl -> OSStatus in
-                self?.collect(abl, Int(frames))
+        } else {
+            let sink = AVAudioSinkNode { [weak self] _, frames, abl -> OSStatus in
+                let bufs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: abl))
+                if let p = bufs.first?.mData?.assumingMemoryBound(to: Float.self) { self?.collect(p, Int(frames)) }
                 return noErr
             }
-            for n in [inMix, eq, userEQ, comp, dblPitch, dblDelay, dblLevel, voiceBus, echo, reverb, limiter, out, sink!] as [AVAudioNode] {
+            self.sink = sink
+            for n in [inMix, eq, userEQ, comp, dblPitch, dblDelay, dblLevel, voiceBus, echo, reverb, limiter, out, sink] as [AVAudioNode] {
                 engine.attach(n)
             }
             engine.connect(input, to: [AVAudioConnectionPoint(node: inMix, bus: 0), AVAudioConnectionPoint(node: sink, bus: 0)],
@@ -361,103 +444,99 @@ final class VoiceEngine {
             engine.connect(reverb, to: limiter, format: mono)
             engine.connect(limiter, to: out, format: mono)
             engine.connect(out, to: engine.mainMixerNode, format: mono)
-            engine.prepare()
         }
+        engine.prepare()
+    }
 
-        func apply(_ p: Preset, reverbAmount: Float, echoAmount: Float) {
-            let b = eq.bands
-            b[0].filterType = .highPass; b[0].frequency = p.lowCut; b[0].bypass = false
-            b[1].filterType = .parametric; b[1].frequency = p.mudHz; b[1].bandwidth = 1.2; b[1].gain = p.mud; b[1].bypass = false
-            b[2].filterType = .parametric; b[2].frequency = p.presenceHz; b[2].bandwidth = 1.5; b[2].gain = p.presence; b[2].bypass = false
-            b[3].filterType = .highShelf; b[3].frequency = 11000; b[3].gain = p.air; b[3].bypass = false
-            eq.globalGain = p.makeup
+    func apply(_ p: VoicePreset, reverbAmount: Float, echoAmount: Float) {
+        let b = eq.bands
+        b[0].filterType = .highPass; b[0].frequency = p.lowCut; b[0].bypass = false
+        b[1].filterType = .parametric; b[1].frequency = p.mudHz; b[1].bandwidth = 1.2; b[1].gain = p.mud; b[1].bypass = false
+        b[2].filterType = .parametric; b[2].frequency = p.presenceHz; b[2].bandwidth = 1.5; b[2].gain = p.presence; b[2].bypass = false
+        b[3].filterType = .highShelf; b[3].frequency = 11000; b[3].gain = p.air; b[3].bypass = false
+        eq.globalGain = safe ? p.makeup * 0.5 : p.makeup     // no compressor in safe mode, so less makeup gain
 
-            set(comp, kDynamicsProcessorParam_Threshold, p.threshold)
-            set(comp, kDynamicsProcessorParam_HeadRoom, p.headroom)
-            set(comp, kDynamicsProcessorParam_ExpansionRatio, 1)
-            set(comp, kDynamicsProcessorParam_AttackTime, 0.004)
-            set(comp, kDynamicsProcessorParam_ReleaseTime, 0.12)
+        reverb.loadFactoryPreset(p.room)
+        reverb.wetDryMix = min(80, p.roomWet * reverbAmount)
+        if safe { return }
 
-            dblPitch.pitch = 9            // +9 cents: the natural wobble of a second take
-            dblDelay.delayTime = 0.018
-            dblDelay.feedback = 0
-            dblDelay.wetDryMix = 100
-            dblLevel.outputVolume = p.double
+        set(comp, kDynamicsProcessorParam_Threshold, p.threshold)
+        set(comp, kDynamicsProcessorParam_HeadRoom, p.headroom)
+        set(comp, kDynamicsProcessorParam_ExpansionRatio, 1)
+        set(comp, kDynamicsProcessorParam_AttackTime, 0.004)
+        set(comp, kDynamicsProcessorParam_ReleaseTime, 0.12)
 
-            echo.delayTime = p.echoTime
-            echo.feedback = p.echoFeedback
-            echo.lowPassCutoff = 6000      // darker repeats sit behind the voice
-            echo.wetDryMix = min(60, p.echoWet * echoAmount)
+        dblPitch.pitch = 9            // +9 cents: the natural wobble of a second take
+        dblDelay.delayTime = 0.018
+        dblDelay.feedback = 0
+        dblDelay.wetDryMix = 100
+        dblLevel.outputVolume = p.double
 
-            reverb.loadFactoryPreset(p.room)
-            reverb.wetDryMix = min(80, p.roomWet * reverbAmount)
+        echo.delayTime = p.echoTime
+        echo.feedback = p.echoFeedback
+        echo.lowPassCutoff = 6000      // darker repeats sit behind the voice
+        echo.wetDryMix = min(60, p.echoWet * echoAmount)
+    }
+
+    // Your EQ, on top of the preset: Bass 100 Hz · Body 250 Hz · Mid 1 kHz · Presence 3.5 kHz · Air 10 kHz
+    func applyUserEQ(_ g: [Float]) {
+        let spec: [(AVAudioUnitEQFilterType, Float)] = [(.lowShelf, 100), (.parametric, 250), (.parametric, 1000), (.parametric, 3500), (.highShelf, 10000)]
+        for (i, b) in userEQ.bands.enumerated() where i < spec.count {
+            b.filterType = spec[i].0; b.frequency = spec[i].1; b.bandwidth = 1.0
+            b.gain = i < g.count ? g[i] : 0; b.bypass = false
         }
+    }
 
-        // Your EQ, on top of the preset: Bass 100 Hz · Body 250 Hz · Mid 1 kHz · Presence 3.5 kHz · Air 10 kHz
-        func applyUserEQ(_ g: [Float]) {
-            let spec: [(AVAudioUnitEQFilterType, Float)] = [(.lowShelf, 100), (.parametric, 250), (.parametric, 1000), (.parametric, 3500), (.highShelf, 10000)]
-            for (i, b) in userEQ.bands.enumerated() where i < spec.count {
-                b.filterType = spec[i].0; b.frequency = spec[i].1; b.bandwidth = 1.0
-                b.gain = i < g.count ? g[i] : 0; b.bypass = false
-            }
-        }
+    private func set(_ u: AVAudioUnitEffect, _ id: AudioUnitParameterID, _ v: Float) {
+        AudioUnitSetParameter(u.audioUnit, id, kAudioUnitScope_Global, 0, v, 0)
+    }
 
-        private func set(_ u: AVAudioUnitEffect, _ id: AudioUnitParameterID, _ v: Float) {
-            AudioUnitSetParameter(u.audioUnit, id, kAudioUnitScope_Global, 0, v, 0)
-        }
-
-        private func collect(_ abl: UnsafePointer<AudioBufferList>, _ n: Int) {
-            let bufs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: abl))
-            guard let p = bufs.first?.mData?.assumingMemoryBound(to: Float.self) else { return }
-            for i in 0..<n { ring[ringPos] = p[i]; ringPos = (ringPos + 1) & 4095 }
-            fresh += n
-            guard fresh >= 1024 else { return }
-            fresh = 0
-            var snap = [Float](repeating: 0, count: 2048)
-            let start = (ringPos - 2048 + 4096) & 4095
-            for i in 0..<2048 { snap[i] = ring[(start + i) & 4095] }
-            let sr = sampleRate
-            analysisQ.async { [weak self] in self?.analyse(snap, sr) }
-        }
-
-        private func analyse(_ x: [Float], _ sr: Double) {
+    private func collect(_ p: UnsafePointer<Float>, _ n: Int) {
+        for i in 0..<n { ring[ringPos] = p[i]; ringPos = (ringPos + 1) & 4095 }
+        fresh += n
+        guard fresh >= 1024 else { return }
+        fresh = 0
+        var snap = [Float](repeating: 0, count: 2048)
+        let start = (ringPos - 2048 + 4096) & 4095
+        for i in 0..<2048 { snap[i] = ring[(start + i) & 4095] }
+        let sr = sampleRate, report = report
+        analysisQ.async {
             var ms: Float = 0
-            vDSP_measqv(x, 1, &ms, vDSP_Length(x.count))
+            vDSP_measqv(snap, 1, &ms, vDSP_Length(snap.count))
             let rms = sqrt(ms)
-            let hz = rms > 0.012 ? Chain.yin(x, Float(sr)) : -1
-            DispatchQueue.main.async { self.report(rms, hz) }
+            report(rms, rms > 0.012 ? VoiceChain.yin(snap, Float(sr)) : -1)
         }
+    }
 
-        /// YIN pitch detection: steadier than plain autocorrelation and much less prone to octave jumps.
-        static func yin(_ x: [Float], _ sr: Float) -> Float {
-            let w = 1024
-            let minLag = max(2, Int(sr / 1100)), maxLag = min(x.count - w - 2, Int(sr / 65))
-            guard maxLag > minLag + 2 else { return -1 }
-            var d = [Float](repeating: 0, count: maxLag + 2)
-            var diff = [Float](repeating: 0, count: w)
-            x.withUnsafeBufferPointer { xp in
-                let base = xp.baseAddress!
-                for tau in 1...(maxLag + 1) {
-                    vDSP_vsub(base + tau, 1, base, 1, &diff, 1, vDSP_Length(w))
-                    var s: Float = 0
-                    vDSP_svesq(diff, 1, &s, vDSP_Length(w))
-                    d[tau] = s
-                }
+    /// YIN pitch detection: steadier than plain autocorrelation and much less prone to octave jumps.
+    static func yin(_ x: [Float], _ sr: Float) -> Float {
+        let w = 1024
+        let minLag = max(2, Int(sr / 1100)), maxLag = min(x.count - w - 2, Int(sr / 65))
+        guard maxLag > minLag + 2 else { return -1 }
+        var d = [Float](repeating: 0, count: maxLag + 2)
+        var diff = [Float](repeating: 0, count: w)
+        x.withUnsafeBufferPointer { xp in
+            guard let base = xp.baseAddress else { return }
+            for tau in 1...(maxLag + 1) {
+                vDSP_vsub(base + tau, 1, base, 1, &diff, 1, vDSP_Length(w))
+                var s: Float = 0
+                vDSP_svesq(diff, 1, &s, vDSP_Length(w))
+                d[tau] = s
             }
-            var run: Float = 0
-            var cm = [Float](repeating: 1, count: maxLag + 2)
-            for tau in 1...(maxLag + 1) { run += d[tau]; cm[tau] = run > 0 ? d[tau] * Float(tau) / run : 1 }
-            var tau = minLag
-            while tau <= maxLag {
-                if cm[tau] < 0.15 {
-                    while tau + 1 <= maxLag && cm[tau + 1] < cm[tau] { tau += 1 }
-                    let a = cm[tau - 1], b = cm[tau], c = cm[tau + 1], den = a + c - 2 * b
-                    let t = den != 0 ? Float(tau) + (a - c) / (2 * den) : Float(tau)
-                    return sr / t
-                }
-                tau += 1
-            }
-            return -1
         }
+        var run: Float = 0
+        var cm = [Float](repeating: 1, count: maxLag + 2)
+        for tau in 1...(maxLag + 1) { run += d[tau]; cm[tau] = run > 0 ? d[tau] * Float(tau) / run : 1 }
+        var tau = minLag
+        while tau <= maxLag {
+            if cm[tau] < 0.15 {
+                while tau + 1 <= maxLag && cm[tau + 1] < cm[tau] { tau += 1 }
+                let a = cm[tau - 1], b = cm[tau], c = cm[tau + 1], den = a + c - 2 * b
+                let t = den != 0 ? Float(tau) + (a - c) / (2 * den) : Float(tau)
+                return sr / t
+            }
+            tau += 1
+        }
+        return -1
     }
 }

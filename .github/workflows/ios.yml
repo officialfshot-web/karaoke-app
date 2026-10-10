@@ -1,0 +1,56 @@
+# Compiles the iPhone app on a real Mac for every push, so compile errors never reach the phone.
+# Builds it the way a brand-new Xcode project would (Swift 6, strict concurrency, MainActor by default)
+# and the classic way (Swift 5), then publishes an unsigned Karaoke.ipa for Sideloadly/AltStore.
+name: iOS build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node --check app.js && node --check sw.js
+
+  build:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [swift6-strict, swift5]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode on the runner
+        run: |
+          XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: Generate Xcode project
+        run: brew install xcodegen && xcodegen
+      - name: Build (${{ matrix.mode }})
+        run: |
+          set -o pipefail
+          if [ "${{ matrix.mode }}" = "swift6-strict" ]; then
+            FLAGS="SWIFT_VERSION=6.0 SWIFT_STRICT_CONCURRENCY=complete"
+            # new Xcode projects default to MainActor isolation; test that too when this Xcode supports it
+            if swift --version 2>&1 | grep -qE 'Swift version (6\.[2-9]|[7-9])'; then FLAGS="$FLAGS SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor"; fi
+          else
+            FLAGS="SWIFT_VERSION=5.0"
+          fi
+          xcodebuild -project Karaoke.xcodeproj -scheme Karaoke -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO $FLAGS build | tee build.log | grep -E 'error:|warning: .*(concurren|actor|Sendable)|BUILD' || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' build.log
+      - name: Package unsigned IPA
+        if: matrix.mode == 'swift6-strict'
+        run: |
+          mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/Karaoke.app Payload/
+          zip -qry Karaoke.ipa Payload
+      - uses: actions/upload-artifact@v4
+        if: matrix.mode == 'swift6-strict'
+        with:
+          name: Karaoke-ipa
+          path: Karaoke.ipa
