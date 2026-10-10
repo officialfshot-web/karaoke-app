@@ -779,7 +779,7 @@ const freqToHue = f => { const lo = 90, hi = 700, t = clamp(Math.log2(Math.max(f
 
 /* ---------- Pitch meter: a live glowing puck on a fixed track, not a scrolling graph ---------- */
 const PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
-let lastFreq = -1, smoothSemi = NaN, trendBuf = [];
+let lastFreq = -1, smoothSemi = NaN, trendBuf = [], holdBuf = [], lastSpark = 0;
 const NOTE_NAMES_FROM_C = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 function noteNameFor(semi) {   // semi is relative to A4=0; octave rolls over at C, like real sheet music
   const r = Math.round(semi), sfc = r + 9;
@@ -789,7 +789,7 @@ function updatePitchMeter(semi) {
   const puck = $('#ptPuck'), note = $('#ptNote'), hint = $('#ptHint');
   if (Number.isNaN(semi)) {
     puck.style.opacity = 0; hint.classList.remove('show'); note.textContent = '—';
-    trendBuf = [];
+    trendBuf = []; holdBuf = [];
     return;
   }
   puck.style.opacity = 1;
@@ -804,6 +804,19 @@ function updatePitchMeter(semi) {
     if (delta > .7) { hint.textContent = '▲ going higher'; hint.classList.add('show'); }
     else if (delta < -.7) { hint.textContent = '▼ going lower'; hint.classList.add('show'); }
     else hint.classList.remove('show');
+  }
+
+  // Guitar Hero-style payoff: holding a steady note sparks the puck, like nailing a note
+  holdBuf.push(semi);
+  if (holdBuf.length > 14) holdBuf.shift();
+  if (holdBuf.length === 14) {
+    const mean = holdBuf.reduce((a, b) => a + b, 0) / 14;
+    const variance = holdBuf.reduce((a, b) => a + (b - mean) ** 2, 0) / 14;
+    const now = performance.now();
+    if (variance < .05 && now - lastSpark > 550) {
+      puck.classList.remove('pspark'); void puck.offsetWidth; puck.classList.add('pspark');
+      lastSpark = now;
+    }
   }
 }
 
