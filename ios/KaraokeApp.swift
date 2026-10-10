@@ -32,9 +32,10 @@ struct WebView: UIViewRepresentable {
         cfg.userContentController.add(context.coordinator, name: "signIn")
         cfg.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "http")
         let wv = WKWebView(frame: .zero, configuration: cfg)
-        wv.isOpaque = false
-        wv.backgroundColor = .clear
+        wv.isOpaque = true
+        wv.backgroundColor = UIColor(red: 11/255, green: 7/255, blue: 20/255, alpha: 1)
         wv.scrollView.bounces = false
+        wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.uiDelegate = context.coordinator
         context.coordinator.webView = wv
         wv.load(URLRequest(url: appURL))
@@ -122,6 +123,14 @@ struct WebView: UIViewRepresentable {
 
         func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
             webView?.window ?? ASPresentationAnchor()
+        }
+
+        // Lets the page's mic-reactive glow (getUserMedia) work — without this iOS silently denies it.
+        @available(iOS 15.0, *)
+        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            decisionHandler(.grant)
         }
 
         // window.prompt() support (the 🔍 "find other lyrics" button)

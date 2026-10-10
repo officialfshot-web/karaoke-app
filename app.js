@@ -746,6 +746,42 @@ $('#close').onclick = () => { $('#player').classList.remove('on'); renderHome();
 $('#prev').onclick = () => (player?.getCurrentTime?.() > 5 ? player.seekTo(0, true) : step(-1));
 $('#next').onclick = () => step(1);
 $('#vidBtn').onclick = () => { $('#vid').classList.toggle('small'); setTimeout(() => { active = -2; }, 520); };
+
+/* ---------- Reactive glow (mic-driven ambient pulse + lyric glow) ---------- */
+let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveData = null, reactiveLevel = 0;
+function reactiveFrame() {
+  if (!reactiveAnalyser) return;
+  requestAnimationFrame(reactiveFrame);
+  reactiveAnalyser.getByteTimeDomainData(reactiveData);
+  let sum = 0;
+  for (let i = 0; i < reactiveData.length; i++) { const v = (reactiveData[i] - 128) / 128; sum += v * v; }
+  const rms = Math.sqrt(sum / reactiveData.length);
+  const target = clamp(rms * 4);
+  reactiveLevel += (target - reactiveLevel) * .25;
+  document.documentElement.style.setProperty('--reactive', reactiveLevel.toFixed(3));
+}
+async function startReactive() {
+  try {
+    reactiveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch { return toast('Mic access denied — enable it in Settings to use this.'); }
+  reactiveCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = reactiveCtx.createMediaStreamSource(reactiveStream);
+  reactiveAnalyser = reactiveCtx.createAnalyser();
+  reactiveAnalyser.fftSize = 256;
+  reactiveData = new Uint8Array(reactiveAnalyser.fftSize);
+  src.connect(reactiveAnalyser);
+  $('#micBtn').classList.add('on');
+  reactiveFrame();
+}
+function stopReactive() {
+  reactiveAnalyser = null;
+  reactiveStream?.getTracks().forEach(t => t.stop());
+  reactiveCtx?.close();
+  reactiveStream = reactiveCtx = null;
+  document.documentElement.style.setProperty('--reactive', 0);
+  $('#micBtn').classList.remove('on');
+}
+$('#micBtn').onclick = () => (reactiveStream ? stopReactive() : startReactive());
 $('#syncBtn').onclick = () => {
   if (plain || !lines.length) return toast('These lyrics have no timing to sync');
   syncMode(!syncing, 'Tap a line the moment it’s sung. (Or just hold any line, anytime.)');

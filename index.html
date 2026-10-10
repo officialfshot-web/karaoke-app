@@ -22,6 +22,7 @@
   --disp:"Bricolage Grotesque",-apple-system,system-ui,sans-serif;
   --ease:cubic-bezier(.22,1,.36,1);
   --st:env(safe-area-inset-top);--sb:env(safe-area-inset-bottom);
+  --reactive:0;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
 html,body{height:100%;background:var(--bg);color:var(--txt);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased;overflow:hidden}
@@ -121,7 +122,8 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 
 /* ---------- player ---------- */
 #player{background:#000;overflow:hidden}
-.amb{position:absolute;inset:-25%;z-index:0;filter:blur(50px) saturate(1.7) brightness(.6)}
+.amb{position:absolute;inset:-25%;z-index:0;transition:transform .08s linear,filter .08s linear;
+  transform:scale(calc(1 + var(--reactive) * .08));filter:blur(50px) saturate(calc(1.7 + var(--reactive) * .9)) brightness(calc(.6 + var(--reactive) * .3))}
 .amb i{position:absolute;width:75%;aspect-ratio:1;border-radius:42%;background:center/auto 134% no-repeat;animation:drift 22s ease-in-out infinite alternate;transition:background-image 1s}
 .amb i:nth-child(1){left:0;top:0}
 .amb i:nth-child(2){right:0;top:22%;animation-duration:29s;animation-direction:alternate-reverse}
@@ -148,7 +150,7 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 .ln[data-d="2"]{filter:blur(1.4px);opacity:.75}
 .ln[data-d="3"]{filter:blur(2.4px);opacity:.5}
 .ln.past{opacity:.35;filter:blur(1px)}
-.ln.on{transform:none;filter:drop-shadow(0 0 22px rgba(var(--acc-rgb),.45))}
+.ln.on{transform:none;filter:drop-shadow(0 0 calc(22px + var(--reactive) * 18px) rgba(var(--acc-rgb),calc(.45 + var(--reactive) * .4)))}
 .ln.tap{cursor:pointer}
 .w{display:inline-block;--wp:0%;transition:transform .35s cubic-bezier(.3,1.7,.5,1)}
 .ln.on .w{color:transparent;-webkit-background-clip:text;background-clip:text;background-image:linear-gradient(90deg,#fff var(--wp),rgba(255,255,255,.34) var(--wp))}
@@ -182,6 +184,7 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 .syncbar button{height:34px;padding:0 14px;border-radius:10px;background:rgba(255,255,255,.15);font-weight:700;font-size:13px;flex:none}
 #lyr.syncing .ln:not(.gap):not(.sk){color:rgba(255,255,255,.7);filter:none;opacity:1}
 .sync{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+#micBtn.on{color:var(--acc);filter:drop-shadow(0 0 calc(4px + var(--reactive) * 10px) rgba(var(--acc-rgb),.8))}
 
 /* sheets */
 .sheet-bg{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.5);opacity:0;visibility:hidden;transition:opacity .35s,visibility 0s .35s}
@@ -325,6 +328,7 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
         <button class="play" id="pp" aria-label="Play"></button>
         <button class="ic tap" id="next" aria-label="Next"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.2v11.6a1 1 0 0 0 1.55.83L14 12.83a1 1 0 0 0 0-1.66L5.55 5.37A1 1 0 0 0 4 6.2z"/></svg></button>
         <button class="ic tap" id="vidBtn" aria-label="Video size"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><rect x="12" y="11" width="6" height="5" rx="1" fill="currentColor"/></svg></button>
+        <button class="ic tap" id="micBtn" aria-label="Reactive glow"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></button>
       </div>
     </div>
   </div>
