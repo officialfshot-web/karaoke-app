@@ -147,11 +147,20 @@ const songFromItem = it => {
   const id = it.contentDetails?.videoId || sn.resourceId?.videoId || it.id?.videoId || (typeof it.id === 'string' ? it.id : null);
   return { id, title: decode(sn.title || ''), channel: decode(sn.videoOwnerChannelTitle || sn.channelTitle || '') };
 };
-const MIN_SONG_SECS = 70;   // YouTube Shorts and other short clips are almost always under this — real songs aren't
-async function songsByIds(ids) {   // resolves video IDs to songs, filtering out Shorts/clips by actual duration
+const MIN_SONG_SECS = 70;   // catches old-style Shorts and other short clips by duration
+const isShort = x => {
+  // YouTube extended Shorts up to 3 minutes, so duration alone no longer catches them all.
+  // Shorts are vertical video though, and real music videos essentially never are — check the
+  // actual thumbnail shape, which doesn't rot every time YouTube changes the duration cap.
+  const t = x.snippet?.thumbnails;
+  const best = t?.maxres || t?.standard || t?.high || t?.medium || t?.default;
+  if (best && best.height > best.width) return true;
+  return isoSecs(x.contentDetails.duration) < MIN_SONG_SECS;
+};
+async function songsByIds(ids) {   // resolves video IDs to songs, filtering out Shorts/clips
   if (!ids.length) return [];
   const v = await yt('videos', { part: 'snippet,contentDetails', id: ids.join(',') });
-  return v.items.filter(x => isoSecs(x.contentDetails.duration) >= MIN_SONG_SECS).map(songFromItem);
+  return v.items.filter(x => !isShort(x)).map(songFromItem);
 }
 const tile = (s, key, i) => {
   const n = names(s.title, s.channel);
@@ -170,7 +179,30 @@ document.addEventListener('click', e => {
 });
 
 /* ---------- Home ---------- */
-let playlists = null;
+let playlists = null, quickPicks = null;
+async function ytmQuickPicks() {   // YouTube Music's actual home-feed recommendation shelf (unofficial API, native app only)
+  const j = await ytm('browse', { browseId: 'FEmusic_home' });
+  const out = [];
+  (function walk(o) {
+    if (!o || typeof o !== 'object') return;
+    const r = o.musicTwoRowItemRenderer;
+    const vid = r?.navigationEndpoint?.watchEndpoint?.videoId;
+    if (vid) {
+      out.push({ id: vid, title: decode((r.title?.runs || []).map(x => x.text).join('')), channel: decode((r.subtitle?.runs || []).map(x => x.text).join('')) });
+      return;
+    }
+    for (const k in o) walk(o[k]);
+  })(j);
+  return out.slice(0, 16);
+}
+async function loadQuickPicks() {
+  try { quickPicks = (await ytmQuickPicks()).filter(s => s.id); } catch { quickPicks = []; }
+  lists.quickpicks = quickPicks;
+  const sec = $('#qpSection');
+  if (!sec) return;
+  if (!quickPicks.length) return sec.remove();
+  $('#qpRail').innerHTML = quickPicks.map((s, i) => tile(s, 'quickpicks', i)).join('');
+}
 function renderHome() {
   const hr = new Date().getHours();
   $('#hello').textContent = hr < 5 ? 'Late-night session' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
@@ -182,6 +214,11 @@ function renderHome() {
       <p>Your likes and playlists, ready to sing. Or just paste any song link above.</p>
       <button class="gbtn tap" id="connectBtn">${ICON.google}Sign in with Google</button></div>`;
   if (lists.recent.length) h += `<h2 class="fadeup" style="animation-delay:.16s">Sing it again</h2><div class="rail fadeup" style="animation-delay:.2s">${lists.recent.map((s, i) => tile(s, 'recent', i)).join('')}</div>`;
+  if (nativeHttpOK() && quickPicks?.length !== 0) {
+    h += `<div class="fadeup" id="qpSection" style="animation-delay:.19s"><h2>Quick picks</h2><div class="rail" id="qpRail">${
+      quickPicks ? quickPicks.map((s, i) => tile(s, 'quickpicks', i)).join('') : '<div class="tile"><i class="art skel"></i></div>'.repeat(4)
+    }</div></div>`;
+  }
   if (token) {
     h += `<h2 class="fadeup" style="animation-delay:.22s">Your library</h2><div class="grid fadeup" id="libGrid" style="animation-delay:.26s">
       <button class="liked tap" data-pl="LL" data-name="Liked songs">${ICON.heart}<b>Liked songs</b><span>Everything you’ve thumbs-upped</span></button>
@@ -190,6 +227,7 @@ function renderHome() {
   $('#homeBody').innerHTML = h;
   $('#connectBtn')?.addEventListener('click', login);
   if (token && !playlists) loadPlaylists();
+  if (nativeHttpOK() && quickPicks === null) loadQuickPicks();
 }
 const plTiles = () => playlists.map(p => `<button class="tile tap" data-pl="${esc(p.id)}" data-name="${esc(p.title)}">
   <i class="art cover" style="${p.thumb ? `background-image:url(${esc(p.thumb)})` : ''}"></i><b class="ell">${esc(p.title)}</b><span>${p.count} songs</span></button>`).join('');
