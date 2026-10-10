@@ -649,6 +649,7 @@ function parseLRC(s) {
 
 function setLyrics(ls) {
   lines = ls; active = -2;
+  Object.assign(coach, { words: 0, hits: 0, late: [], held: 0, scored: new Set() });
   $('#lmsg').style.display = 'none';
   $('#lyrIn').innerHTML = ls.map((l, i) => {
     if (!l.text) return `<div class="ln gap" data-i="${i}"><i></i><i></i><i></i></div>`;
@@ -795,7 +796,7 @@ $('#mini').onclick = () => $('#player').classList.add('on');
 $('#close').onclick = () => { $('#player').classList.remove('on'); renderHome(); };
 $('#prev').onclick = () => (player?.getCurrentTime?.() > 5 ? player.seekTo(0, true) : step(-1));
 $('#next').onclick = () => step(1);
-$('#vidBtn').onclick = () => { $('#vid').classList.toggle('small'); setTimeout(() => { active = -2; }, 520); };
+$('#vidOpt').onclick = () => { $('#vid').classList.toggle('small'); sheet('#optSheet', false); setTimeout(() => { active = -2; }, 520); };
 
 /* ---------- Reactive glow (mic-driven ambient pulse + pitch-colored lyric glow) ---------- */
 let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveBuf = null, reactiveLevel = 0, reactiveHue = 14;
@@ -866,6 +867,7 @@ function updatePitchMeter(semi) {
     if (variance < .05 && now - lastSpark > 550) {
       puck.classList.remove('pspark'); void puck.offsetWidth; puck.classList.add('pspark');
       lastSpark = now;
+      coach.held++;
     }
   }
 }
@@ -876,10 +878,14 @@ function reactiveFrame() {
   reactiveAnalyser.getFloatTimeDomainData(reactiveBuf);
   let sum = 0;
   for (let i = 0; i < reactiveBuf.length; i++) sum += reactiveBuf[i] * reactiveBuf[i];
-  const rms = Math.sqrt(sum / reactiveBuf.length);
+  voiceFrame(Math.sqrt(sum / reactiveBuf.length), detectPitch(reactiveBuf, reactiveCtx.sampleRate));
+}
+// In the iPhone app the native vocal chain measures loudness + pitch and calls this ~47 times a second.
+window.nativeVoice = (rms, hz) => { if (nativeVoiceOn) voiceFrame(rms, hz); };
+function voiceFrame(rms, freq) {
   reactiveLevel += (clamp(rms * 4) - reactiveLevel) * .25;
   document.documentElement.style.setProperty('--reactive', reactiveLevel.toFixed(3));
-  lastFreq = detectPitch(reactiveBuf, reactiveCtx.sampleRate);   // every frame now — halving the rate was adding real latency
+  lastFreq = freq;
   if (lastFreq > 0) {
     reactiveHue += (freqToHue(lastFreq) - reactiveHue) * .25;
     document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
@@ -891,8 +897,21 @@ function reactiveFrame() {
   else if (Number.isNaN(smoothSemi)) smoothSemi = rawSemi;   // new note after silence — snap, nothing to ease from
   else smoothSemi += (rawSemi - smoothSemi) * .3;
   updatePitchMeter(smoothSemi);
+  coachFrame(!Number.isNaN(rawSemi));
 }
+const nativeVoiceOK = () => !!window.webkit?.messageHandlers?.voice;
+let nativeVoiceOn = false;
+const voiceMsg = m => window.webkit.messageHandlers.voice.postMessage({ ...m, ...fx });
 async function startReactive() {
+  if (nativeVoiceOK()) {
+    const r = await voiceMsg({ cmd: 'start' }).catch(e => ({ ok: false, error: String(e) }));
+    if (!r?.ok) return toast(r?.error || 'Couldn’t start the mic');
+    nativeVoiceOn = true;
+    lastFreq = -1; smoothSemi = NaN; trendBuf = [];
+    $('#micBtn').classList.add('on');
+    $('#pitchTrackWrap').classList.add('on');
+    return;
+  }
   try {
     reactiveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch { return toast('Mic access denied — enable it in Settings to use this.'); }
@@ -908,6 +927,7 @@ async function startReactive() {
   reactiveFrame();
 }
 function stopReactive() {
+  if (nativeVoiceOn) { nativeVoiceOn = false; voiceMsg({ cmd: 'stop' }).catch(() => {}); }
   reactiveAnalyser = null;
   reactiveStream?.getTracks().forEach(t => t.stop());
   reactiveCtx?.close();
@@ -918,7 +938,7 @@ function stopReactive() {
   $('#micBtn').classList.remove('on');
   $('#pitchTrackWrap').classList.remove('on');
 }
-$('#micBtn').onclick = () => (reactiveStream ? stopReactive() : startReactive());
+$('#micBtn').onclick = () => (reactiveStream || nativeVoiceOn ? stopReactive() : startReactive());
 $('#syncBtn').onclick = () => {
   if (plain || !lines.length) return toast('These lyrics have no timing to sync');
   syncMode(!syncing, 'Tap a line the moment it’s sung. (Or just hold any line, anytime.)');
@@ -956,12 +976,99 @@ $('#syncX').onclick = () => syncMode(false);
 $('#offM').onclick = () => nudge(-.2);
 $('#offP').onclick = () => nudge(.2);
 
+/* ---------- Voice studio (hear yourself with studio effects — iPhone app only) ---------- */
+const FX_PRESETS = [
+  ['clean', 'Clean', 'Natural, just polished'],
+  ['studio', 'Studio', 'Vocal booth: tight, bright, plate'],
+  ['pop', 'Pop Star', 'Doubled, glossy, radio-ready'],
+  ['rnb', 'R&B Silk', 'Smooth, airy, lush hall'],
+  ['arena', 'Arena', 'Big stage, echo and hall'],
+  ['vintage', 'Vintage', 'Warm ’70s slapback and plate'],
+  ['cathedral', 'Cathedral', 'Huge, ethereal space'],
+];
+const fx = Object.assign({ preset: 'studio', monitor: .9, reverb: 1, echo: 1, speaker: false }, store.get('voiceFx', {}));
+function renderFx() {
+  $('#fxGrid').innerHTML = FX_PRESETS.map(([id, name, desc]) =>
+    `<button class="fxcard tap${fx.preset === id ? ' on' : ''}" data-fx="${id}"><b>${name}</b><span>${desc}</span></button>`).join('');
+  $('#fxMon').value = Math.round(fx.monitor * 100);
+  $('#fxVerb').value = Math.round(fx.reverb * 100);
+  $('#fxEcho').value = Math.round(fx.echo * 100);
+  $('#fxSpeaker').checked = fx.speaker;
+}
+function saveFx() {
+  store.set('voiceFx', fx);
+  if (nativeVoiceOK()) voiceMsg({ cmd: 'set' }).catch(() => {});
+}
+$('#fxBtn').onclick = () => {
+  renderFx();
+  if (!nativeVoiceOK()) $('#fxRoute').textContent = 'Hearing yourself with effects needs the iPhone app (built with Xcode). The pitch meter and coach still work here.';
+  else if (!nativeVoiceOn) $('#fxRoute').textContent = 'Tap the mic button to start. Wired earbuds = no delay. AirPods work but add a little lag.';
+  sheet('#fxSheet', true);
+};
+$('#fxGrid').onclick = e => { const b = e.target.closest('[data-fx]'); if (!b) return; fx.preset = b.dataset.fx; renderFx(); saveFx(); };
+$('#fxMon').oninput = () => { fx.monitor = $('#fxMon').value / 100; saveFx(); };
+$('#fxVerb').oninput = () => { fx.reverb = $('#fxVerb').value / 100; saveFx(); };
+$('#fxEcho').oninput = () => { fx.echo = $('#fxEcho').value / 100; saveFx(); };
+$('#fxSpeaker').onchange = () => { fx.speaker = $('#fxSpeaker').checked; saveFx(); };
+window.nativeVoiceRoute = r => {
+  $('#fxRoute').textContent = !r.running ? 'Tap the mic button to start.'
+    : r.wired ? '🎧 Earbuds connected. You’re hearing yourself live.'
+    : r.bluetooth ? '🎧 Bluetooth connected. Works, but wired earbuds have less delay.'
+    : r.hearing ? '🔊 Playing your voice through the speaker. Turn it down if it squeals.'
+    : r.car ? '🚗 Car audio: your voice isn’t played back (it would feed back). Effects come back with earbuds.'
+    : 'Plug in earbuds to hear yourself. Your voice isn’t played through the speaker so it won’t squeal.';
+};
+
+/* ---------- Singing coach: are you on the words, on time? ---------- */
+const coach = { words: 0, hits: 0, late: [], held: 0, wasVoiced: false, scored: new Set() };
+function resetCoach() {
+  Object.assign(coach, { words: 0, hits: 0, late: [], held: 0, wasVoiced: false, scored: new Set() });
+  lines.forEach(l => l.words?.forEach(w => { w.f = 0; w.v = 0; w.done = false; }));
+}
+function coachFrame(voiced) {
+  if (!lines.length || !player?.getPlayerState || player.getPlayerState() !== YT.PlayerState.PLAYING) { coach.wasVoiced = voiced; return; }
+  const raw = now(), t = raw + deltaAt(raw);
+  // coming in: the moment you start singing, compare it to the nearest line start
+  if (voiced && !coach.wasVoiced) {
+    let best = -1, bd = Infinity;
+    lines.forEach((l, k) => { if (l.text && !coach.scored.has(k)) { const d = t - l.t; if (d > -.8 && d < .9 && Math.abs(d) < bd) { bd = Math.abs(d); best = k; } } });
+    if (best >= 0) { coach.scored.add(best); coach.late.push(t - lines[best].t); }
+  }
+  coach.wasVoiced = voiced;
+  // staying on the words: were you singing while each word was sung?
+  for (let k = Math.max(0, active - 1); k <= active + 1 && k < lines.length; k++) {
+    const L = lines[k];
+    L?.words?.forEach((w, j) => {
+      if (w.done) return;
+      if (t >= w.ta && t <= w.tb) { w.f = (w.f || 0) + 1; if (voiced) w.v = (w.v || 0) + 1; }
+      else if (t > w.tb && w.f) {
+        w.done = true; coach.words++;
+        if (w.v / w.f >= .4) { coach.hits++; L.spans[j]?.classList.add('hit'); }
+      }
+    });
+  }
+}
+function coachReport() {
+  if (coach.words < 8) return '';
+  const pct = Math.round(coach.hits / coach.words * 100);
+  const late = coach.late.length ? coach.late.slice().sort((a, b) => a - b)[coach.late.length >> 1] : 0;
+  const tip = Math.abs(late) < .15 ? 'Right on the beat. Your flow is locked in.'
+    : late > 0 ? `You’re coming in ${late.toFixed(2)}s late. Breathe before the line and hit the first word.`
+    : `You’re rushing by ${(-late).toFixed(2)}s. Let the beat land, then come in.`;
+  const best = store.get('best', {}), prev = best[cur.song.id] || 0;
+  if (pct > prev) { best[cur.song.id] = pct; store.set('best', best); }
+  return `<div class="stats"><div><b>${pct}%</b><span>on the words${pct > prev && prev ? ' · new best!' : ''}</span></div>
+    <div><b>${late >= 0 ? '+' : '−'}${Math.abs(late).toFixed(2)}s</b><span>timing</span></div>
+    <div><b>${coach.held}</b><span>notes held</span></div></div><p class="tip">${tip}</p>`;
+}
+
 /* ---------- End of song ---------- */
 const CHEERS = ['Mic drop.', 'Encore!', 'Nailed it.', 'Legendary.', 'Crowd goes wild.'];
 function showEnd() {
   const n = names(cur.song.title, cur.song.channel);
   $('#eH').textContent = CHEERS[(Math.random() * CHEERS.length) | 0];
   $('#eP').textContent = `You just sang ${n.track}`;
+  $('#eStats').innerHTML = coachReport();
   const nx = queue[qi + 1];
   $('#eNext').style.display = nx ? '' : 'none';
   if (nx) {
@@ -981,7 +1088,7 @@ function showEnd() {
 }
 function hideEnd() { clearTimeout(endTimer); $('#end').classList.remove('on'); }
 $('#eNext').onclick = () => step(1);
-$('#eAgain').onclick = () => { hideEnd(); player.seekTo(0, true); player.playVideo(); };
+$('#eAgain').onclick = () => { hideEnd(); resetCoach(); document.querySelectorAll('.w.hit').forEach(w => w.classList.remove('hit')); player.seekTo(0, true); player.playVideo(); };
 
 addEventListener('resize', () => { active = -2; });
 renderAuth();

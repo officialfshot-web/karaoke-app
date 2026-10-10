@@ -18,6 +18,8 @@ On iPhone open the URL in **Safari** → Share → **Add to Home Screen**.
 3. Set `appURL` at the top of the file to your hosted URL.
 4. Drag `icon-1024.png` into Assets → AppIcon.
 5. Target → Signing & Capabilities → Team: your Apple ID (Personal Team).
+   Then Target → Info → add **Privacy - Microphone Usage Description** = `Sing along with live studio effects.` (the voice studio crashes without it).
+   If Xcode shows Swift concurrency errors: Build Settings → **Default Actor Isolation** → `nonisolated`.
 6. Plug in your iPhone, pick it as the run target, press ▶.
    On the phone: Settings → General → VPN & Device Management → trust your Apple ID.
    Also turn on Settings → Privacy & Security → **Developer Mode** if asked.
