@@ -747,18 +747,117 @@ $('#prev').onclick = () => (player?.getCurrentTime?.() > 5 ? player.seekTo(0, tr
 $('#next').onclick = () => step(1);
 $('#vidBtn').onclick = () => { $('#vid').classList.toggle('small'); setTimeout(() => { active = -2; }, 520); };
 
-/* ---------- Reactive glow (mic-driven ambient pulse + lyric glow) ---------- */
-let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveData = null, reactiveLevel = 0;
+/* ---------- Reactive glow (mic-driven ambient pulse + pitch-colored lyric glow) ---------- */
+let reactiveStream = null, reactiveCtx = null, reactiveAnalyser = null, reactiveBuf = null, reactiveLevel = 0, reactiveHue = 14, pitchTick = 0;
+
+// Autocorrelation pitch detector (same approach as Chrome Music Lab's pitch detector).
+// Finds the fundamental frequency of a voice in the time-domain signal — not scientifically
+// precise, but plenty accurate for a visual "what note is this roughly" effect.
+function detectPitch(buf, sampleRate) {
+  const SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < .012) return -1;   // too quiet — don't guess a pitch out of noise
+  const thres = .2;
+  let r1 = 0, r2 = SIZE - 1;
+  for (let i = 0; i < SIZE >> 1; i++) if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+  for (let i = 1; i < SIZE >> 1; i++) if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+  const b = buf.subarray(r1, r2), n = b.length;
+  const c = new Float32Array(n);
+  for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < n - i; j++) s += b[j] * b[j + i]; c[i] = s; }
+  let d = 0; while (d < n - 1 && c[d] > c[d + 1]) d++;
+  let maxVal = -1, T0 = -1;
+  for (let i = d; i < n; i++) if (c[i] > maxVal) { maxVal = c[i]; T0 = i; }
+  if (T0 > 0 && T0 < n - 1) {   // parabolic interpolation for sub-sample precision
+    const x1 = c[T0 - 1], x2 = c[T0], x3 = c[T0 + 1], a = (x1 + x3 - 2 * x2) / 2, b2 = (x3 - x1) / 2;
+    if (a) T0 -= b2 / (2 * a);
+  }
+  return T0 > 0 ? sampleRate / T0 : -1;
+}
+const freqToHue = f => { const lo = 90, hi = 700, t = clamp(Math.log2(Math.max(f, lo) / lo) / Math.log2(hi / lo)); return 220 - t * 220; };
+
+/* ---------- Pitch track (Guitar Hero–style scrolling note line) ---------- */
+const PT_LEN = 180, PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
+let pitchHistory = [], lastFreq = -1;
+function drawPitchTrack() {
+  const cv = $('#pitchTrack');
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.width = cv.clientWidth * dpr, H = cv.height = cv.clientHeight * dpr;
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, W, H);
+  const yFor = s => H * (1 - (clamp(s, PT_LO, PT_HI) - PT_LO) / (PT_HI - PT_LO));
+
+  // octave gridlines — dashed and subtle, with a solid brighter line at A4 (your reference pitch)
+  for (let s = Math.ceil(PT_LO / 12) * 12; s <= PT_HI; s += 12) {
+    const y = yFor(s);
+    g.strokeStyle = s === 0 ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.07)';
+    g.lineWidth = 1;
+    g.setLineDash(s === 0 ? [] : [2 * dpr, 5 * dpr]);
+    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+  }
+  g.setLineDash([]);
+
+  const n = pitchHistory.length, stepX = W / PT_LEN, hue = reactiveHue.toFixed(0);
+  // one continuous path, split into subpaths at gaps (silence)
+  const path = new Path2D();
+  let drawing = false, firstX = W, lastX = W, lastY = null;
+  for (let i = 0; i < n; i++) {
+    const v = pitchHistory[i], x = W - (n - i) * stepX;
+    if (Number.isNaN(v)) { drawing = false; continue; }
+    const y = yFor(v);
+    if (!drawing) { path.moveTo(x, y); firstX = Math.min(firstX, x); drawing = true; }
+    else path.lineTo(x, y);
+    lastX = x; lastY = y;
+  }
+  // fades from transparent (oldest, left) to vivid (now, right) — a true comet tail, one gradient instead of N strokes
+  const grad = g.createLinearGradient(W - PT_LEN * stepX, 0, W, 0);
+  grad.addColorStop(0, `hsla(${hue},90%,65%,0)`);
+  grad.addColorStop(.7, `hsla(${hue},90%,65%,.55)`);
+  grad.addColorStop(1, `hsla(${hue},90%,68%,.95)`);
+
+  g.save();   // soft outer glow pass
+  g.shadowColor = `hsla(${hue},90%,60%,.9)`;
+  g.shadowBlur = 11 * dpr;
+  g.strokeStyle = grad; g.lineWidth = 3.5 * dpr; g.lineCap = 'round'; g.lineJoin = 'round';
+  g.stroke(path);
+  g.restore();
+  g.strokeStyle = grad; g.lineWidth = 1.3 * dpr;   // crisp bright core on top of the glow
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  g.stroke(path);
+
+  if (lastY != null) {   // glowing orb at the live point
+    const glow = g.createRadialGradient(lastX, lastY, 0, lastX, lastY, 20 * dpr);
+    glow.addColorStop(0, `hsla(${hue},95%,72%,.9)`);
+    glow.addColorStop(.5, `hsla(${hue},95%,68%,.25)`);
+    glow.addColorStop(1, `hsla(${hue},95%,68%,0)`);
+    g.fillStyle = glow;
+    g.beginPath(); g.arc(lastX, lastY, 20 * dpr, 0, Math.PI * 2); g.fill();
+    g.fillStyle = `hsl(${hue},95%,82%)`;
+    g.beginPath(); g.arc(lastX, lastY, 3 * dpr, 0, Math.PI * 2); g.fill();
+  }
+}
+
 function reactiveFrame() {
   if (!reactiveAnalyser) return;
   requestAnimationFrame(reactiveFrame);
-  reactiveAnalyser.getByteTimeDomainData(reactiveData);
+  reactiveAnalyser.getFloatTimeDomainData(reactiveBuf);
   let sum = 0;
-  for (let i = 0; i < reactiveData.length; i++) { const v = (reactiveData[i] - 128) / 128; sum += v * v; }
-  const rms = Math.sqrt(sum / reactiveData.length);
-  const target = clamp(rms * 4);
-  reactiveLevel += (target - reactiveLevel) * .25;
+  for (let i = 0; i < reactiveBuf.length; i++) sum += reactiveBuf[i] * reactiveBuf[i];
+  const rms = Math.sqrt(sum / reactiveBuf.length);
+  reactiveLevel += (clamp(rms * 4) - reactiveLevel) * .25;
   document.documentElement.style.setProperty('--reactive', reactiveLevel.toFixed(3));
+  if (++pitchTick % 2 === 0) {   // autocorrelation is the expensive part — every other frame is plenty smooth
+    lastFreq = detectPitch(reactiveBuf, reactiveCtx.sampleRate);
+    if (lastFreq > 0) {
+      reactiveHue += (freqToHue(lastFreq) - reactiveHue) * .15;
+      document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
+    }
+  }
+  const semi = (lastFreq > 0 && reactiveLevel > .08) ? 12 * Math.log2(lastFreq / 440) : NaN;
+  pitchHistory.push(semi);
+  if (pitchHistory.length > PT_LEN) pitchHistory.shift();
+  drawPitchTrack();
 }
 async function startReactive() {
   try {
@@ -767,10 +866,12 @@ async function startReactive() {
   reactiveCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = reactiveCtx.createMediaStreamSource(reactiveStream);
   reactiveAnalyser = reactiveCtx.createAnalyser();
-  reactiveAnalyser.fftSize = 256;
-  reactiveData = new Uint8Array(reactiveAnalyser.fftSize);
+  reactiveAnalyser.fftSize = 2048;
+  reactiveBuf = new Float32Array(reactiveAnalyser.fftSize);
   src.connect(reactiveAnalyser);
+  pitchHistory = []; lastFreq = -1;
   $('#micBtn').classList.add('on');
+  $('#pitchTrackWrap').classList.add('on');
   reactiveFrame();
 }
 function stopReactive() {
@@ -778,8 +879,11 @@ function stopReactive() {
   reactiveStream?.getTracks().forEach(t => t.stop());
   reactiveCtx?.close();
   reactiveStream = reactiveCtx = null;
+  reactiveHue = 14;
   document.documentElement.style.setProperty('--reactive', 0);
+  document.documentElement.style.setProperty('--pitch-hue', 14);
   $('#micBtn').classList.remove('on');
+  $('#pitchTrackWrap').classList.remove('on');
 }
 $('#micBtn').onclick = () => (reactiveStream ? stopReactive() : startReactive());
 $('#syncBtn').onclick = () => {
