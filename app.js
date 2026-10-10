@@ -779,7 +779,7 @@ const freqToHue = f => { const lo = 90, hi = 700, t = clamp(Math.log2(Math.max(f
 
 /* ---------- Pitch track (Guitar Hero–style scrolling note line) ---------- */
 const PT_LEN = 180, PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
-let pitchHistory = [], lastFreq = -1;
+let pitchHistory = [], lastFreq = -1, smoothSemi = NaN;
 const NOTE_NAME = s => 'A' + (4 + s / 12);   // our gridlines are always multiples of 12 (A-to-A octaves)
 function drawPitchTrack() {
   const cv = $('#pitchTrack');
@@ -870,8 +870,13 @@ function reactiveFrame() {
       document.documentElement.style.setProperty('--pitch-hue', reactiveHue.toFixed(1));
     }
   }
-  const semi = (lastFreq > 0 && reactiveLevel > .08) ? 12 * Math.log2(lastFreq / 440) : NaN;
-  pitchHistory.push(semi);
+  // smooth the plotted pitch instead of the raw per-frame reading — autocorrelation jitters a bit
+  // (and occasionally snaps to the wrong octave for a frame), which made the line too twitchy to sing against
+  const rawSemi = (lastFreq > 0 && reactiveLevel > .08) ? 12 * Math.log2(lastFreq / 440) : NaN;
+  if (Number.isNaN(rawSemi)) smoothSemi = NaN;
+  else if (Number.isNaN(smoothSemi)) smoothSemi = rawSemi;   // new note after silence — snap, nothing to ease from
+  else smoothSemi += (rawSemi - smoothSemi) * .18;
+  pitchHistory.push(smoothSemi);
   if (pitchHistory.length > PT_LEN) pitchHistory.shift();
   drawPitchTrack();
 }
@@ -885,7 +890,7 @@ async function startReactive() {
   reactiveAnalyser.fftSize = 2048;
   reactiveBuf = new Float32Array(reactiveAnalyser.fftSize);
   src.connect(reactiveAnalyser);
-  pitchHistory = []; lastFreq = -1;
+  pitchHistory = []; lastFreq = -1; smoothSemi = NaN;
   $('#micBtn').classList.add('on');
   $('#pitchTrackWrap').classList.add('on');
   reactiveFrame();
