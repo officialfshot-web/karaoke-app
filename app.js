@@ -180,28 +180,40 @@ document.addEventListener('click', e => {
 
 /* ---------- Home ---------- */
 let playlists = null, quickPicks = null;
-async function ytmQuickPicks() {   // YouTube Music's actual home-feed recommendation shelf (unofficial API, native app only)
+// YouTube Music's actual home-feed shelf (unofficial API, native app only). Without a real signed-in
+// session this comes back as mix/mood playlists (e.g. "Pop Certified"), not individual song picks —
+// genre/mood mixes are what YouTube Music actually shows an anonymous request, confirmed by inspecting
+// a live response. Playlist browseIds here are "VL" + a standard playlist ID, so they drop straight
+// into the same openList() the rest of the app's playlists already use.
+async function ytmQuickPicks() {
   const j = await ytm('browse', { browseId: 'FEmusic_home' });
   const out = [];
   (function walk(o) {
     if (!o || typeof o !== 'object') return;
     const r = o.musicTwoRowItemRenderer;
-    const vid = r?.navigationEndpoint?.watchEndpoint?.videoId;
-    if (vid) {
-      out.push({ id: vid, title: decode((r.title?.runs || []).map(x => x.text).join('')), channel: decode((r.subtitle?.runs || []).map(x => x.text).join('')) });
+    const browseId = r?.title?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId;
+    if (browseId?.startsWith('VL')) {
+      const thumbs = r.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail?.thumbnails || [];
+      out.push({
+        id: browseId.slice(2),
+        title: decode((r.title?.runs || []).map(x => x.text).join('')),
+        subtitle: decode((r.subtitle?.runs || []).map(x => x.text).join('')),
+        thumb: thumbs[thumbs.length - 1]?.url,
+      });
       return;
     }
     for (const k in o) walk(o[k]);
   })(j);
-  return out.slice(0, 16);
+  return out.slice(0, 12);
 }
+const ytmTile = p => `<button class="tile tap" data-pl="${esc(p.id)}" data-name="${esc(p.title)}">
+  <i class="art cover" style="${p.thumb ? `background-image:url(${esc(p.thumb)})` : ''}"></i><b class="ell">${esc(p.title)}</b><span class="ell">${esc(p.subtitle)}</span></button>`;
 async function loadQuickPicks() {
   try { quickPicks = (await ytmQuickPicks()).filter(s => s.id); } catch { quickPicks = []; }
-  lists.quickpicks = quickPicks;
   const sec = $('#qpSection');
   if (!sec) return;
   if (!quickPicks.length) return sec.remove();
-  $('#qpRail').innerHTML = quickPicks.map((s, i) => tile(s, 'quickpicks', i)).join('');
+  $('#qpRail').innerHTML = quickPicks.map(ytmTile).join('');
 }
 function renderHome() {
   const hr = new Date().getHours();
@@ -215,8 +227,8 @@ function renderHome() {
       <button class="gbtn tap" id="connectBtn">${ICON.google}Sign in with Google</button></div>`;
   if (lists.recent.length) h += `<h2 class="fadeup" style="animation-delay:.16s">Sing it again</h2><div class="rail fadeup" style="animation-delay:.2s">${lists.recent.map((s, i) => tile(s, 'recent', i)).join('')}</div>`;
   if (nativeHttpOK() && quickPicks?.length !== 0) {
-    h += `<div class="fadeup" id="qpSection" style="animation-delay:.19s"><h2>Quick picks</h2><div class="rail" id="qpRail">${
-      quickPicks ? quickPicks.map((s, i) => tile(s, 'quickpicks', i)).join('') : '<div class="tile"><i class="art skel"></i></div>'.repeat(4)
+    h += `<div class="fadeup" id="qpSection" style="animation-delay:.19s"><h2>For you</h2><div class="rail" id="qpRail">${
+      quickPicks ? quickPicks.map(ytmTile).join('') : '<div class="tile"><i class="art skel"></i></div>'.repeat(4)
     }</div></div>`;
   }
   if (token) {
