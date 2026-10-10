@@ -1170,7 +1170,9 @@ $('#fxReset').onclick = async () => {
 };
 $('#fxEqReset').onclick = () => { fx.eq = [0, 0, 0, 0, 0]; renderFx(); saveFx(); };
 window.nativeVoiceRoute = r => {
-  $('#fxRoute').textContent = r.error ? `⚠️ ${r.error}` : !r.running ? 'Tap the mic button to start.' : r.summary;
+  const delay = r.delayMs ? ` · ${r.delayMs} ms delay` : '';
+  const tip = r.bluetooth && r.delayMs > 80 ? ' Bluetooth headphones always lag; wired earbuds make it instant.' : '';
+  $('#fxRoute').textContent = r.error ? `⚠️ ${r.error}` : !r.running ? 'Tap the mic button to start.' : r.summary + delay + tip;
 };
 
 /* ---------- Singing coach: are you on the words, on time? ---------- */

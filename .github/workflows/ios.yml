@@ -14,6 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: node --check app.js && node --check sw.js
+      - name: Studio FX audio checks (latency, stability, decay, de-esser, compressor)
+        run: node dsp/test.mjs
 
   build:
     runs-on: macos-15
