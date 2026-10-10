@@ -186,17 +186,19 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 #lyr.syncing .ln:not(.gap):not(.sk){color:rgba(255,255,255,.7);filter:none;opacity:1}
 .sync{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
 #micBtn.on{color:var(--acc);filter:drop-shadow(0 0 calc(4px + var(--reactive) * 10px) hsla(var(--pitch-hue),88%,60%,.85))}
-.ptwrap{display:none;position:relative;width:calc(100% - 28px);height:104px;margin:8px auto 0;padding:16px 20px;border-radius:20px;overflow:hidden;
+.ptwrap{display:none;position:relative;width:calc(100% - 28px);height:128px;margin:8px auto 0;padding:0;border-radius:20px;overflow:hidden;
   background:linear-gradient(165deg,rgba(255,255,255,.11),rgba(255,255,255,.02) 65%);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.18),inset 0 0 0 1px rgba(255,255,255,.07),inset 0 -14px 24px -16px rgba(0,0,0,.5),0 12px 26px -14px rgba(0,0,0,.65);
   backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3)}
 .ptwrap.on{display:block}
 .ptwrap::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.07;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-.ptHead{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;height:26px}
+#hw{position:absolute;inset:0;width:100%;height:100%;display:block}
+.ptHead{position:absolute;z-index:1;left:14px;right:14px;top:8px;display:flex;align-items:center;justify-content:space-between;height:26px;pointer-events:none}
+.hwtag{position:absolute;z-index:1;left:50%;transform:translateX(-50%);top:14px;white-space:nowrap;font-size:10.5px;font-weight:700;letter-spacing:.04em;color:rgba(255,255,255,.5);pointer-events:none}
 .ptHead b{font-family:var(--disp);font-size:22px;font-weight:800;letter-spacing:-.01em;
   text-shadow:0 0 16px hsla(var(--pitch-hue),90%,65%,.7);transition:text-shadow .2s}
-.pthint{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:rgba(0,0,0,.3);
+.pthint{position:absolute;z-index:1;left:14px;bottom:8px;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:rgba(0,0,0,.3);
   opacity:0;transform:translateY(-2px);transition:opacity .25s,transform .25s;white-space:nowrap}
 .pthint.show{opacity:1;transform:translateY(0)}
 .ptrack{position:relative;z-index:1;height:10px;margin-top:26px;border-radius:20px;
@@ -290,6 +292,38 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
   .end .btns{margin-top:20px}
 }
 
+/* ---------- rewards ---------- */
+:root{--heat:0}
+.heat{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:var(--heat);transition:opacity .6s;
+  background:radial-gradient(120% 70% at 50% 110%,rgba(var(--acc-rgb),.55),transparent 60%),radial-gradient(90% 50% at 50% -10%,rgba(255,196,60,.25),transparent 60%)}
+.hud{position:absolute;right:14px;top:8px;z-index:4;text-align:right;pointer-events:none;opacity:0;transition:opacity .4s}
+.hud.on{opacity:1}
+.hud b{display:block;font-family:var(--disp);font-size:21px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+  text-shadow:0 2px 14px rgba(0,0,0,.5)}
+.hud span{display:inline-block;margin-top:2px;font-size:13px;font-weight:800;letter-spacing:.04em;padding:3px 9px;border-radius:99px;
+  background:rgba(255,196,60,.18);color:#ffd45a;opacity:0;transform:scale(.8);transition:opacity .25s,transform .25s cubic-bezier(.3,1.7,.5,1)}
+.hud span.on{opacity:1;transform:none}
+.hud span.bump{animation:bump .35s cubic-bezier(.3,1.8,.4,1)}
+@keyframes bump{40%{transform:scale(1.3)}}
+#pops{position:absolute;inset:0;pointer-events:none;z-index:4;overflow:hidden}
+.pop{position:absolute;left:28px;font-family:var(--disp);font-weight:800;font-size:22px;letter-spacing:.06em;white-space:nowrap;
+  animation:popUp 1.1s cubic-bezier(.2,.9,.3,1) forwards}
+.pop.perfect{font-size:26px;background:linear-gradient(90deg,#ffe27a,#ff9f2e);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 12px rgba(255,180,40,.7))}
+.pop.great{color:var(--acc);filter:drop-shadow(0 0 10px rgba(var(--acc-rgb),.7))}
+.pop.good{color:#fff;opacity:.85}
+@keyframes popUp{0%{opacity:0;transform:translateY(10px) scale(.7)}15%{opacity:1;transform:translateY(0) scale(1.08)}30%{transform:scale(1)}
+  100%{opacity:0;transform:translateY(-34px)}}
+.mile{position:absolute;left:0;right:0;top:34%;text-align:center;font-family:var(--disp);font-weight:800;font-size:44px;letter-spacing:-.02em;
+  background:linear-gradient(90deg,#ffe27a,#ff7a3d,#ffe27a);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 22px rgba(255,150,40,.8));animation:mile 1.6s cubic-bezier(.2,.9,.3,1) forwards}
+@keyframes mile{0%{opacity:0;transform:scale(.5)}18%{opacity:1;transform:scale(1.12)}30%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-20px)}}
+.wspark{position:fixed;width:6px;height:6px;border-radius:50%;pointer-events:none;z-index:9;background:#ffd45a;box-shadow:0 0 8px #ffb52e;
+  animation:wsp .7s cubic-bezier(.2,.8,.3,1) forwards}
+@keyframes wsp{to{transform:translate(var(--x),var(--y)) scale(.2);opacity:0}}
+.stats b.rank,.rank{font-family:var(--disp);font-size:56px;font-weight:800;line-height:1;background:linear-gradient(180deg,#ffe27a,#ff8a2e);
+  -webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 18px rgba(255,160,40,.6))}
+
 /* voice studio + coach */
 .fxgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
 .fxcard{text-align:left;padding:14px;border-radius:16px;background:var(--card2);border:1.5px solid transparent;transition:border-color .2s,background .2s}
@@ -298,6 +332,12 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 .fxcard.on{border-color:var(--acc);background:rgba(var(--acc-rgb),.14)}
 .fxcard.on b{color:var(--acc)}
 .slider{width:100%;accent-color:var(--acc);height:28px}
+.eq{display:flex;justify-content:space-between;gap:6px;height:190px;padding:4px 2px 0}
+.eqband{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
+.eqband input{writing-mode:vertical-lr;direction:rtl;-webkit-appearance:slider-vertical;appearance:slider-vertical;width:28px;flex:1;accent-color:var(--acc)}
+.eqband b{font-size:11.5px;font-weight:700;color:var(--mute)}
+.eqv{font-family:var(--disp);font-size:14px;font-weight:800;font-variant-numeric:tabular-nums}
+.eqreset{font-size:12px;font-weight:700;color:var(--acc);letter-spacing:0;text-transform:none}
 .opt input{accent-color:var(--acc);width:20px;height:20px}
 .w.hit{filter:drop-shadow(0 0 6px hsla(45,100%,60%,.55))}
 .ln.past .w.hit{color:hsla(45,95%,72%,.85)}
@@ -360,6 +400,7 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
 <section id="player" class="view">
   <div class="amb"><i></i><i></i><i></i></div>
   <div class="shade"></div>
+  <div class="heat"></div>
   <div class="grain"></div>
   <div class="ui">
     <div class="ptop">
@@ -370,15 +411,15 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
     <div class="video" id="vid"><div id="yt"></div></div>
     <div class="syncbar" id="syncbar"><span id="syncTxt"></span><button id="syncX">Done</button></div>
     <div class="ptwrap" id="pitchTrackWrap">
-      <div class="ptHead"><b id="ptNote">—</b><span class="pthint" id="ptHint"></span></div>
-      <div class="ptrack">
-        <span class="ptick" style="left:12.5%">A3</span>
-        <span class="ptick" style="left:50%">A4</span>
-        <span class="ptick" style="left:87.5%">A5</span>
-        <div class="ptpuck" id="ptPuck"></div>
-      </div>
+      <canvas id="hw"></canvas>
+      <div class="ptHead"><b id="ptNote">—</b></div>
+      <span class="hwtag" id="hwTag"></span>
+      <span class="pthint" id="ptHint"></span>
+      <div class="hud" id="hud"><b id="score">0</b><span id="combo"></span></div>
     </div>
-    <div id="lyr"><div id="lyrIn"></div><div class="msg" id="lmsg"></div></div>
+    <div id="lyr"><div id="lyrIn"></div><div class="msg" id="lmsg"></div>
+      <div id="pops"></div>
+    </div>
     <div class="pbot">
       <div class="bar" id="bar"><div class="tr"><div class="fl" id="fl"></div></div><div class="kn" id="kn"></div></div>
       <div class="times"><span id="tcur">0:00</span><span id="tdur">0:00</span></div>
@@ -439,7 +480,8 @@ h2 small{font:600 13px -apple-system,system-ui;color:var(--mute);letter-spacing:
     <input type="range" class="slider" id="fxVerb" min="0" max="200">
     <div class="lbl">Echo</div>
     <input type="range" class="slider" id="fxEcho" min="0" max="200">
-    <label class="opt"><input type="checkbox" id="fxSpeaker">&nbsp; Hear myself through the speaker (can squeal)</label>
+    <div class="lbl" style="display:flex;justify-content:space-between">EQ<button class="eqreset" id="fxEqReset">Reset</button></div>
+    <div class="eq" id="fxEq"></div>
   </div>
 </div>
 

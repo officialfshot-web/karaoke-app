@@ -352,6 +352,7 @@ function openSong(song) {
   const r = store.get('recent', []).filter(x => x.id !== song.id);
   r.unshift(song); store.set('recent', r.slice(0, 20));
   loadTiming(song.id);
+  hwLoadGuide(song.id);
   setMeta(song.title, song.channel);
   setArt(song.id);
   syncMode(false);
@@ -650,6 +651,7 @@ function parseLRC(s) {
 function setLyrics(ls) {
   lines = ls; active = -2;
   Object.assign(coach, { words: 0, hits: 0, late: [], held: 0, scored: new Set() });
+  resetGame();
   $('#lmsg').style.display = 'none';
   $('#lyrIn').innerHTML = ls.map((l, i) => {
     if (!l.text) return `<div class="ln gap" data-i="${i}"><i></i><i></i><i></i></div>`;
@@ -729,6 +731,8 @@ function now() {
 }
 function tick() {
   requestAnimationFrame(tick);
+  drawHighway();
+  gameFrame();
   if (!player?.getCurrentTime) return;
   const raw = now(), dur = player.getDuration() || 0;
   const pct = dur ? raw / dur * 100 : 0;
@@ -837,14 +841,13 @@ function noteNameFor(semi) {   // semi is relative to A4=0; octave rolls over at
   return NOTE_NAMES_FROM_C[((sfc % 12) + 12) % 12] + (4 + Math.floor(sfc / 12));
 }
 function updatePitchMeter(semi) {
-  const puck = $('#ptPuck'), note = $('#ptNote'), hint = $('#ptHint');
+  const note = $('#ptNote'), hint = $('#ptHint');
+  hwVoice(semi);
   if (Number.isNaN(semi)) {
-    puck.style.opacity = 0; hint.classList.remove('show'); note.textContent = '—';
+    hint.classList.remove('show'); note.textContent = '—';
     trendBuf = []; holdBuf = [];
     return;
   }
-  puck.style.opacity = 1;
-  puck.style.left = (clamp((semi - PT_LO) / (PT_HI - PT_LO)) * 100).toFixed(1) + '%';
   note.textContent = noteNameFor(semi);
 
   // direction hint: compare now to ~a third of a second ago, so it reads as a trend, not noise
@@ -865,7 +868,7 @@ function updatePitchMeter(semi) {
     const variance = holdBuf.reduce((a, b) => a + (b - mean) ** 2, 0) / 14;
     const now = performance.now();
     if (variance < .05 && now - lastSpark > 550) {
-      puck.classList.remove('pspark'); void puck.offsetWidth; puck.classList.add('pspark');
+      hwSpark();
       lastSpark = now;
       coach.held++;
     }
@@ -908,6 +911,7 @@ async function startReactive() {
     if (!r?.ok) return toast(r?.error || 'Couldn’t start the mic');
     nativeVoiceOn = true;
     lastFreq = -1; smoothSemi = NaN; trendBuf = [];
+    toast(r.route || 'Mic on');
     $('#micBtn').classList.add('on');
     $('#pitchTrackWrap').classList.add('on');
     return;
@@ -976,6 +980,147 @@ $('#syncX').onclick = () => syncMode(false);
 $('#offM').onclick = () => nudge(-.2);
 $('#offP').onclick = () => nudge(.2);
 
+/* ---------- Note highway: past (your voice trail) · present (playhead) · future (the guide) ---------- */
+// Time scrolls right→left. The guide is the melody line to follow; your voice draws a glowing trail on top.
+const HW_PAST = 2.5, HW_FUTURE = 5.5, HW_RANGE = 7;   // seconds behind/ahead, semitones above/below center
+const hw = { trail: [], take: [], guide: null, notes: [], center: NaN, sparks: [], lastTake: 0, onPitch: 0 };
+function hwLyricTime() { const raw = now(); return raw + deltaAt(raw); }
+function hwVoice(semi) {
+  if (!player?.getCurrentTime) return;
+  const t = hwLyricTime();
+  hw.trail.push({ t, s: semi });
+  while (hw.trail.length && hw.trail[0].t < t - HW_PAST - .5) hw.trail.shift();
+  if (!Number.isNaN(semi)) {
+    hw.center = Number.isNaN(hw.center) ? semi : hw.center + (semi - hw.center) * .01;
+    const playing = player.getPlayerState?.() === YT.PlayerState.PLAYING;
+    if (playing && t - hw.lastTake > .066) { hw.take.push([+t.toFixed(2), +semi.toFixed(2)]); hw.lastTake = t; }
+  }
+}
+function hwSpark() { hw.sparks.push({ at: performance.now() }); }
+function hwLoadGuide(id) {
+  hw.guide = store.get('guides', {})[id] || null;
+  hw.take = []; hw.trail = []; hw.lastTake = 0;
+  hw.notes = hwNotes(hw.guide);
+  if (hw.notes.length) { const ss = hw.notes.map(n => n.s).sort((a, b) => a - b); hw.center = ss[ss.length >> 1]; }
+  $('#hwTag').textContent = hw.guide ? 'GUIDE · YOUR BEST TAKE' : 'SING IT ONCE TO UNLOCK THE GUIDE';
+}
+function hwSaveGuide() {
+  if (hw.take.length < 60) return;
+  const g = store.get('guides', {}); g[cur.song.id] = hw.take; store.set('guides', g);
+}
+// Turn a pitch trace into notes: runs of steady pitch, snapped to the nearest semitone.
+function hwNotes(g) {
+  const out = []; if (!g?.length) return out;
+  let n = null;
+  for (const [t, s] of g) {
+    if (n && t - n.t1 < .2 && Math.abs(s - n.sum / n.k) < .7) { n.t1 = t; n.sum += s; n.k++; continue; }
+    if (n && n.t1 - n.t0 >= .08) out.push(n);
+    n = { t0: t, t1: t, sum: s, k: 1 };
+  }
+  if (n && n.t1 - n.t0 >= .08) out.push(n);
+  return out.map(x => ({ t0: x.t0, t1: x.t1 + .066, s: Math.round(x.sum / x.k) }));
+}
+// guide note at lyric time t (null between notes)
+function hwGuideAt(t) {
+  for (const n of hw.notes) { if (n.t0 > t) break; if (t <= n.t1) return n.s; }
+  return null;
+}
+function drawHighway() {
+  const cv = $('#hw'), wrap = $('#pitchTrackWrap');
+  if (!wrap.classList.contains('on') || !player?.getCurrentTime) return;
+  const dpr = devicePixelRatio || 1, W = wrap.clientWidth, H = wrap.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const c = cv.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const t = hwLyricTime(), span = HW_PAST + HW_FUTURE, x0 = W * HW_PAST / span;
+  const top = 34, bot = H - 22, mid = (top + bot) / 2;
+  const center = Number.isNaN(hw.center) ? -7 : hw.center;
+  const X = tt => x0 + (tt - t) / span * W;
+  const Y = s => clamp(mid - (s - center) / HW_RANGE * (bot - top) / 2, top, bot);
+  const acc = getComputedStyle(document.documentElement).getPropertyValue('--acc-rgb').trim() || '255,90,54';
+
+  // octave-ish guide lines
+  c.strokeStyle = 'rgba(255,255,255,.06)'; c.lineWidth = 1;
+  for (let k = -2; k <= 2; k++) { const y = mid + k * (bot - top) / 4; c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); }
+
+  // word blocks: where the words land (always), sitting on the guide pitch when we have one
+  c.font = '600 10px -apple-system,system-ui,sans-serif'; c.textBaseline = 'top';
+  for (const L of lines) {
+    if (!L.words || L.t > t + HW_FUTURE + 1 || (L.end ?? L.t + 8) < t - HW_PAST - 1) continue;
+    for (const w of L.words) {
+      const xa = X(w.ta), xb = X(Math.max(w.tb, w.ta + .12));
+      if (xb < 0 || xa > W) continue;
+      const future = w.ta > t;
+      if (!hw.notes.length) { c.fillStyle = `rgba(255,255,255,${future ? .16 : .07})`; roundRect(c, xa, bot - 4, Math.max(4, xb - xa - 2), 4, 2); }
+      if (future && xb - xa > 18) { c.fillStyle = 'rgba(255,255,255,.42)'; c.fillText(w.text, xa + 1, bot + 4); }
+    }
+  }
+
+  // the guide: note bars to follow, flowing in from the right (past ones fade, the current one lights up)
+  for (const n of hw.notes) {
+    const xa = X(n.t0), xb = X(n.t1);
+    if (xb < 0) continue; if (xa > W) break;
+    const y = Y(n.s), nowNote = n.t0 <= t && t <= n.t1;
+    if (nowNote) { c.save(); c.shadowColor = `rgba(${acc},.9)`; c.shadowBlur = 16; c.fillStyle = `rgba(${acc},.95)`; }
+    else c.fillStyle = n.t1 < t ? 'rgba(255,255,255,.14)' : 'rgba(255,255,255,.62)';
+    roundRect(c, xa, y - 6, Math.max(8, xb - xa), 12, 6);
+    if (nowNote) c.restore();
+  }
+
+  // your voice: a glowing trail behind the playhead
+  const now_ = hw.trail.length ? hw.trail[hw.trail.length - 1] : null;
+  const g0 = hwGuideAt(t), live = now_ && !Number.isNaN(now_.s) && t - now_.t < .2;
+  const onPitch = live && g0 != null && Math.abs(now_.s - g0) < .8;
+  hw.onPitch += ((onPitch ? 1 : 0) - hw.onPitch) * .15;
+  const col = onPitch ? '255,214,90' : acc;
+  c.save();
+  c.shadowColor = `rgba(${col},.9)`; c.shadowBlur = 14;
+  c.lineWidth = 4; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath();
+  let pen = false;
+  for (const p of hw.trail) {
+    if (Number.isNaN(p.s)) { pen = false; continue; }
+    const x = X(p.t), y = Y(p.s);
+    if (!pen) { c.moveTo(x, y); pen = true; } else c.lineTo(x, y);
+  }
+  const grad = c.createLinearGradient(0, 0, x0, 0);
+  grad.addColorStop(0, `rgba(${col},0)`); grad.addColorStop(1, `rgba(${col},1)`);
+  c.strokeStyle = grad; c.stroke();
+  c.restore();
+
+  // playhead
+  const ph = c.createLinearGradient(0, top - 10, 0, bot + 10);
+  ph.addColorStop(0, 'rgba(255,255,255,0)'); ph.addColorStop(.5, `rgba(255,255,255,${.35 + hw.onPitch * .4})`); ph.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = ph; c.fillRect(x0 - 1, top - 10, 2, bot - top + 20);
+
+  // present: your note right now
+  if (live) {
+    const y = Y(now_.s);
+    c.save(); c.shadowColor = `rgba(${col},1)`; c.shadowBlur = 18 + hw.onPitch * 14;
+    c.fillStyle = '#fff'; c.beginPath(); c.arc(x0, y, 7 + hw.onPitch * 2, 0, Math.PI * 2); c.fill(); c.restore();
+    c.fillStyle = `rgba(${col},1)`; c.beginPath(); c.arc(x0, y, 4, 0, Math.PI * 2); c.fill();
+    // sparks when you hold a note steady
+    const ms = performance.now();
+    hw.sparks = hw.sparks.filter(s => ms - s.at < 600);
+    for (const s of hw.sparks) {
+      const k = (ms - s.at) / 600;
+      c.strokeStyle = `rgba(${col},${1 - k})`; c.lineWidth = 2;
+      c.beginPath(); c.arc(x0, y, 8 + k * 26, 0, Math.PI * 2); c.stroke();
+    }
+  }
+  // fade both edges
+  c.globalCompositeOperation = 'destination-out';
+  const fade = c.createLinearGradient(0, 0, W, 0);
+  fade.addColorStop(0, 'rgba(0,0,0,1)'); fade.addColorStop(.08, 'rgba(0,0,0,0)'); fade.addColorStop(.92, 'rgba(0,0,0,0)'); fade.addColorStop(1, 'rgba(0,0,0,1)');
+  c.fillStyle = fade; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = 'source-over';
+}
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); c.fill();
+}
+
 /* ---------- Voice studio (hear yourself with studio effects — iPhone app only) ---------- */
 const FX_PRESETS = [
   ['clean', 'Clean', 'Natural, just polished'],
@@ -986,14 +1131,16 @@ const FX_PRESETS = [
   ['vintage', 'Vintage', 'Warm ’70s slapback and plate'],
   ['cathedral', 'Cathedral', 'Huge, ethereal space'],
 ];
-const fx = Object.assign({ preset: 'studio', monitor: .9, reverb: 1, echo: 1, speaker: false }, store.get('voiceFx', {}));
+const fx = Object.assign({ preset: 'studio', monitor: .9, reverb: 1, echo: 1, eq: [0, 0, 0, 0, 0] }, store.get('voiceFx', {}));
+const EQ_BANDS = ['Bass', 'Body', 'Mid', 'Presence', 'Air'];
 function renderFx() {
   $('#fxGrid').innerHTML = FX_PRESETS.map(([id, name, desc]) =>
     `<button class="fxcard tap${fx.preset === id ? ' on' : ''}" data-fx="${id}"><b>${name}</b><span>${desc}</span></button>`).join('');
   $('#fxMon').value = Math.round(fx.monitor * 100);
   $('#fxVerb').value = Math.round(fx.reverb * 100);
   $('#fxEcho').value = Math.round(fx.echo * 100);
-  $('#fxSpeaker').checked = fx.speaker;
+  $('#fxEq').innerHTML = EQ_BANDS.map((n, i) => `<label class="eqband"><span class="eqv" id="eqv${i}">${fmtDb(fx.eq[i])}</span>
+    <input type="range" min="-12" max="12" step="0.5" value="${fx.eq[i]}" data-eq="${i}"><b>${n}</b></label>`).join('');
 }
 function saveFx() {
   store.set('voiceFx', fx);
@@ -1001,27 +1148,25 @@ function saveFx() {
 }
 $('#fxBtn').onclick = () => {
   renderFx();
-  if (!nativeVoiceOK()) $('#fxRoute').textContent = 'Hearing yourself with effects needs the iPhone app (built with Xcode). The pitch meter and coach still work here.';
-  else if (!nativeVoiceOn) $('#fxRoute').textContent = 'Tap the mic button to start. Wired earbuds = no delay. AirPods work but add a little lag.';
+  if (!nativeVoiceOK()) $('#fxRoute').textContent = '⚠️ This build doesn’t have the voice studio yet, so the mic falls back to iPhone call audio. Paste the newest KaraokeApp.swift into Xcode and press ▶.';
+  else if (!nativeVoiceOn) $('#fxRoute').textContent = 'Tap the mic button to start. Wired earbuds = zero delay. AirPods work with a little lag.';
   sheet('#fxSheet', true);
 };
 $('#fxGrid').onclick = e => { const b = e.target.closest('[data-fx]'); if (!b) return; fx.preset = b.dataset.fx; renderFx(); saveFx(); };
 $('#fxMon').oninput = () => { fx.monitor = $('#fxMon').value / 100; saveFx(); };
 $('#fxVerb').oninput = () => { fx.reverb = $('#fxVerb').value / 100; saveFx(); };
 $('#fxEcho').oninput = () => { fx.echo = $('#fxEcho').value / 100; saveFx(); };
-$('#fxSpeaker').onchange = () => { fx.speaker = $('#fxSpeaker').checked; saveFx(); };
+const fmtDb = v => (v > 0 ? '+' : '') + (+v).toFixed(v % 1 ? 1 : 0);
+$('#fxEq').oninput = e => { const i = e.target.dataset.eq; if (i == null) return; fx.eq[i] = +e.target.value; $('#eqv' + i).textContent = fmtDb(fx.eq[i]); saveFx(); };
+$('#fxEqReset').onclick = () => { fx.eq = [0, 0, 0, 0, 0]; renderFx(); saveFx(); };
 window.nativeVoiceRoute = r => {
-  $('#fxRoute').textContent = !r.running ? 'Tap the mic button to start.'
-    : r.wired ? '🎧 Earbuds connected. You’re hearing yourself live.'
-    : r.bluetooth ? '🎧 Bluetooth connected. Works, but wired earbuds have less delay.'
-    : r.hearing ? '🔊 Playing your voice through the speaker. Turn it down if it squeals.'
-    : r.car ? '🚗 Car audio: your voice isn’t played back (it would feed back). Effects come back with earbuds.'
-    : 'Plug in earbuds to hear yourself. Your voice isn’t played through the speaker so it won’t squeal.';
+  $('#fxRoute').textContent = r.error ? `⚠️ ${r.error}` : !r.running ? 'Tap the mic button to start.' : r.summary;
 };
 
 /* ---------- Singing coach: are you on the words, on time? ---------- */
 const coach = { words: 0, hits: 0, late: [], held: 0, wasVoiced: false, scored: new Set() };
 function resetCoach() {
+  resetGame(); lines.forEach(l => { l.rated = false; });
   Object.assign(coach, { words: 0, hits: 0, late: [], held: 0, wasVoiced: false, scored: new Set() });
   lines.forEach(l => l.words?.forEach(w => { w.f = 0; w.v = 0; w.done = false; }));
 }
@@ -1043,7 +1188,10 @@ function coachFrame(voiced) {
       if (t >= w.ta && t <= w.tb) { w.f = (w.f || 0) + 1; if (voiced) w.v = (w.v || 0) + 1; }
       else if (t > w.tb && w.f) {
         w.done = true; coach.words++;
-        if (w.v / w.f >= .4) { coach.hits++; L.spans[j]?.classList.add('hit'); }
+        const hit = w.v / w.f >= .4;
+        if (hit) { coach.hits++; L.spans[j]?.classList.add('hit'); }
+        reward(hit, L.spans[j]);
+        if (L.words.every(x => x.done) && !L.rated) { L.rated = true; rateLine(L); }
       }
     });
   }
@@ -1056,11 +1204,79 @@ function coachReport() {
     : late > 0 ? `You’re coming in ${late.toFixed(2)}s late. Breathe before the line and hit the first word.`
     : `You’re rushing by ${(-late).toFixed(2)}s. Let the beat land, then come in.`;
   const best = store.get('best', {}), prev = best[cur.song.id] || 0;
-  if (pct > prev) { best[cur.song.id] = pct; store.set('best', best); }
-  return `<div class="stats"><div><b>${pct}%</b><span>on the words${pct > prev && prev ? ' · new best!' : ''}</span></div>
+  if (pct > prev) { best[cur.song.id] = pct; store.set('best', best); hwSaveGuide(); }
+  return `<div class="stats"><div><b class="rank">${rankFor(pct)}</b><span>grade</span></div>
+    <div><b>${game.score.toLocaleString()}</b><span>score · best combo ${game.best}</span></div></div>
+    <div class="stats"><div><b>${pct}%</b><span>on the words${pct > prev && prev ? ' · new best!' : ''}</span></div>
     <div><b>${late >= 0 ? '+' : '−'}${Math.abs(late).toFixed(2)}s</b><span>timing</span></div>
     <div><b>${coach.held}</b><span>notes held</span></div></div><p class="tip">${tip}</p>`;
 }
+
+/* ---------- Rewards: points, combo streak, line ratings, celebrations ---------- */
+const game = { score: 0, shown: 0, combo: 0, best: 0 };
+const mult = () => 1 + Math.min(3, Math.floor(game.combo / 10));
+function resetGame() { Object.assign(game, { score: 0, shown: 0, combo: 0, best: 0 }); setHeat(); hudCombo(); }
+function setHeat() { document.documentElement.style.setProperty('--heat', Math.min(1, game.combo / 30).toFixed(2)); }
+function hudCombo(bump) {
+  const el = $('#combo');
+  el.textContent = game.combo >= 3 ? `${game.combo} COMBO${mult() > 1 ? ' · ×' + mult() : ''}` : '';
+  el.classList.toggle('on', game.combo >= 3);
+  if (bump) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+}
+function reward(hit, span) {
+  if (!hit) { game.combo = 0; setHeat(); return hudCombo(); }
+  game.combo++; game.best = Math.max(game.best, game.combo);
+  game.score += 100 * mult();
+  setHeat(); hudCombo(game.combo % 10 === 0);
+  if (span) wordBurst(span);
+  if ([10, 25, 50, 100].includes(game.combo)) milestone(`${game.combo} COMBO`);
+}
+function wordBurst(span) {
+  const r = span.getBoundingClientRect();
+  for (let k = 0; k < 7; k++) {
+    const s = document.createElement('i'); s.className = 'wspark';
+    const a = -Math.PI / 2 + (Math.random() - .5) * 2.2, d = 24 + Math.random() * 30;
+    s.style.cssText = `left:${r.left + r.width / 2}px;top:${r.top + r.height / 2}px;--x:${Math.cos(a) * d}px;--y:${Math.sin(a) * d}px`;
+    document.body.appendChild(s); setTimeout(() => s.remove(), 750);
+  }
+}
+function rateLine(L) {
+  const n = L.words.length, h = L.words.filter((w, j) => L.spans[j]?.classList.contains('hit')).length, r = h / n;
+  const [cls, label, bonus] = r >= .9 ? ['perfect', 'PERFECT', 500] : r >= .7 ? ['great', 'GREAT', 250] : r >= .45 ? ['good', 'GOOD', 100] : [];
+  if (!cls) return;
+  game.score += bonus * mult();
+  const p = document.createElement('div'); p.className = 'pop ' + cls; p.textContent = label;
+  const lyr = $('#lyr').getBoundingClientRect(), lr = L.el.getBoundingClientRect();
+  p.style.top = Math.max(0, lr.top - lyr.top - 30) + 'px';
+  $('#pops').appendChild(p); setTimeout(() => p.remove(), 1150);
+}
+function milestone(text) {
+  const m = document.createElement('div'); m.className = 'mile'; m.textContent = '🔥 ' + text;
+  $('#pops').appendChild(m); setTimeout(() => m.remove(), 1650);
+  confetti($('#player'), 30);
+}
+function confetti(host, count) {
+  const colors = ['var(--acc)', 'var(--acc2)', '#fff', '#ffd23f'];
+  for (let k = 0; k < count; k++) {
+    const s = document.createElement('i'); s.className = 'spark';
+    const a = Math.random() * Math.PI * 2, d = 140 + Math.random() * 260;
+    s.style.cssText = `--x:${Math.cos(a) * d}px;--y:${Math.sin(a) * d + 120}px;--r:${Math.random() * 720}deg;background:${colors[k % 4]};animation-delay:${Math.random() * .15}s;${k % 3 ? '' : 'border-radius:50%'}`;
+    host.appendChild(s); setTimeout(() => s.remove(), 1700);
+  }
+}
+// rolling score counter + live on-pitch bonus, every frame while the mic is on
+function gameFrame() {
+  const on = !!(reactiveStream || nativeVoiceOn);
+  $('#hud').classList.toggle('on', on && lines.length > 0);
+  if (!on) return;
+  if (hw.onPitch > .6 && player?.getPlayerState?.() === YT.PlayerState.PLAYING) game.score += 2 * mult();
+  if (game.shown !== game.score) {
+    game.shown += Math.max(1, Math.ceil((game.score - game.shown) * .18));
+    if (game.shown > game.score) game.shown = game.score;
+    $('#score').textContent = game.shown.toLocaleString();
+  }
+}
+const rankFor = pct => pct >= 92 ? 'S' : pct >= 80 ? 'A' : pct >= 65 ? 'B' : pct >= 45 ? 'C' : 'D';
 
 /* ---------- End of song ---------- */
 const CHEERS = ['Mic drop.', 'Encore!', 'Nailed it.', 'Legendary.', 'Crowd goes wild.'];

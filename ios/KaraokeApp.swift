@@ -113,7 +113,7 @@ struct WebView: UIViewRepresentable {
             let v = VoiceEngine.shared
             v.configure(d)
             switch cmd {
-            case "start": v.start { ok, err in reply(["ok": ok, "error": err ?? ""], nil) }
+            case "start": v.start { ok, err in reply(["ok": ok, "error": err ?? "", "route": v.routeSummary], nil) }
             case "stop": v.stop(); reply(["ok": true], nil)
             default: reply(["ok": true], nil)
             }
@@ -172,7 +172,8 @@ struct WebView: UIViewRepresentable {
 // MARK: - Voice studio
 
 /// Live vocal chain, built from Apple's pro audio units:
-/// mic → EQ (low cut, de-mud, presence, air) → compressor → [dry + doubler] → echo → reverb → limiter → your ears.
+/// mic → preset EQ (low cut, de-mud, presence, air) → your EQ → compressor → [dry + doubler] → echo → reverb → limiter → your ears.
+/// Full-quality music audio session: no voice processing ("phone call" mode) anywhere.
 /// It also measures loudness and pitch (YIN) for the pitch meter and the singing coach.
 final class VoiceEngine {
     static let shared = VoiceEngine()
@@ -206,7 +207,8 @@ final class VoiceEngine {
 
     // settings from the page
     private var presetName = "studio"
-    private var monitor: Float = 0.9, reverbAmount: Float = 1, echoAmount: Float = 1, speakerOK = false
+    private var monitor: Float = 0.9, reverbAmount: Float = 1, echoAmount: Float = 1
+    private var userEQ: [Float] = [0, 0, 0, 0, 0]          // bass, body, mid, presence, air (dB)
 
     private var chain: Chain?
     private(set) var running = false
@@ -216,11 +218,30 @@ final class VoiceEngine {
             self?.applyRoute()
         }
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] _ in
-            // headphones plugged/unplugged can change the sample rate: rebuild the chain
-            guard let self, self.running else { return }
-            self.chain?.engine.stop(); self.chain = nil
-            try? self.startChain()
+            self?.rebuild()   // headphones plugged/unplugged can change the sample rate
         }
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+            // a call, Siri, another app…: when it's over, bring the mic back
+            guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            try? AVAudioSession.sharedInstance().setActive(true)
+            self?.rebuild()
+        }
+    }
+
+    private func rebuild() {
+        guard running else { return }
+        chain?.engine.stop(); chain = nil
+        do { try startChain() } catch { onRoute?(["running": false, "error": error.localizedDescription]) }
+    }
+
+    private var outputs: [AVAudioSession.Port] { AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType } }
+    var routeSummary: String {
+        let o = outputs
+        if o.contains(where: { [.headphones, .usbAudio, .lineOut].contains($0) }) { return "🎧 Hearing yourself live" }
+        if o.contains(where: { [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP].contains($0) }) { return "🎧 Hearing yourself (Bluetooth adds a little delay)" }
+        if o.contains(.carAudio) { return "🚗 Hearing yourself in the car. Lower “Your voice” if it rings" }
+        return "🔊 Hearing yourself on the speaker. Lower “Your voice” if it rings"
     }
 
     func configure(_ d: [String: Any]) {
@@ -228,7 +249,7 @@ final class VoiceEngine {
         if let m = d["monitor"] as? Double { monitor = Float(m) }
         if let r = d["reverb"] as? Double { reverbAmount = Float(r) }
         if let e = d["echo"] as? Double { echoAmount = Float(e) }
-        if let s = d["speaker"] as? Bool { speakerOK = s }
+        if let g = d["eq"] as? [Double], g.count == 5 { userEQ = g.map { Float(max(-12, min(12, $0))) } }
         applyPreset(); applyRoute()
     }
 
@@ -266,17 +287,17 @@ final class VoiceEngine {
     private func applyPreset() {
         guard let c = chain, let p = Self.presets[presetName] else { return }
         c.apply(p, reverbAmount: reverbAmount, echoAmount: echoAmount)
+        c.applyUserEQ(userEQ)
     }
 
-    // Only play your voice back when it can't feed back into the mic (earbuds/headphones), unless you opt in.
+    // Always play your voice back. Through open speakers it starts a bit quieter so it doesn't ring.
     private func applyRoute() {
-        let outs = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType }
+        let outs = outputs
         let wired = outs.contains { [.headphones, .usbAudio, .lineOut].contains($0) }
         let bluetooth = outs.contains { [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP].contains($0) }
         let car = outs.contains(.carAudio)
-        let hearing = wired || bluetooth || speakerOK
-        chain?.out.outputVolume = hearing ? monitor : 0
-        onRoute?(["wired": wired, "bluetooth": bluetooth, "car": car, "hearing": hearing, "running": running])
+        chain?.out.outputVolume = (wired || bluetooth) ? monitor : monitor * 0.6
+        onRoute?(["wired": wired, "bluetooth": bluetooth, "car": car, "hearing": running, "running": running, "summary": routeSummary])
     }
 
     /// One engine + its nodes. Rebuilt from scratch whenever the audio hardware changes.
@@ -284,6 +305,7 @@ final class VoiceEngine {
         let engine = AVAudioEngine()
         let inMix = AVAudioMixerNode()
         let eq = AVAudioUnitEQ(numberOfBands: 4)
+        let userEQ = AVAudioUnitEQ(numberOfBands: 5)
         let comp = AVAudioUnitEffect(audioComponentDescription: Chain.apple(kAudioUnitSubType_DynamicsProcessor))
         let dblPitch = AVAudioUnitTimePitch()
         let dblDelay = AVAudioUnitDelay()
@@ -321,13 +343,14 @@ final class VoiceEngine {
                 self?.collect(abl, Int(frames))
                 return noErr
             }
-            for n in [inMix, eq, comp, dblPitch, dblDelay, dblLevel, voiceBus, echo, reverb, limiter, out, sink!] as [AVAudioNode] {
+            for n in [inMix, eq, userEQ, comp, dblPitch, dblDelay, dblLevel, voiceBus, echo, reverb, limiter, out, sink!] as [AVAudioNode] {
                 engine.attach(n)
             }
             engine.connect(input, to: [AVAudioConnectionPoint(node: inMix, bus: 0), AVAudioConnectionPoint(node: sink, bus: 0)],
                            fromBus: 0, format: inFmt)
             engine.connect(inMix, to: eq, format: mono)
-            engine.connect(eq, to: comp, format: mono)
+            engine.connect(eq, to: userEQ, format: mono)
+            engine.connect(userEQ, to: comp, format: mono)
             engine.connect(comp, to: [AVAudioConnectionPoint(node: voiceBus, bus: 0), AVAudioConnectionPoint(node: dblPitch, bus: 0)],
                            fromBus: 0, format: mono)
             engine.connect(dblPitch, to: dblDelay, format: mono)      // doubler: a slightly detuned, slightly late copy
@@ -368,6 +391,15 @@ final class VoiceEngine {
 
             reverb.loadFactoryPreset(p.room)
             reverb.wetDryMix = min(80, p.roomWet * reverbAmount)
+        }
+
+        // Your EQ, on top of the preset: Bass 100 Hz · Body 250 Hz · Mid 1 kHz · Presence 3.5 kHz · Air 10 kHz
+        func applyUserEQ(_ g: [Float]) {
+            let spec: [(AVAudioUnitEQFilterType, Float)] = [(.lowShelf, 100), (.parametric, 250), (.parametric, 1000), (.parametric, 3500), (.highShelf, 10000)]
+            for (i, b) in userEQ.bands.enumerated() where i < spec.count {
+                b.filterType = spec[i].0; b.frequency = spec[i].1; b.bandwidth = 1.0
+                b.gain = i < g.count ? g[i] : 0; b.bypass = false
+            }
         }
 
         private func set(_ u: AVAudioUnitEffect, _ id: AudioUnitParameterID, _ v: Float) {
