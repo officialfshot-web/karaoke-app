@@ -780,6 +780,7 @@ const freqToHue = f => { const lo = 90, hi = 700, t = clamp(Math.log2(Math.max(f
 /* ---------- Pitch track (Guitar Hero–style scrolling note line) ---------- */
 const PT_LEN = 180, PT_LO = -16, PT_HI = 16;   // semitones relative to A4, ~2.7 octaves of range
 let pitchHistory = [], lastFreq = -1;
+const NOTE_NAME = s => 'A' + (4 + s / 12);   // our gridlines are always multiples of 12 (A-to-A octaves)
 function drawPitchTrack() {
   const cv = $('#pitchTrack');
   const dpr = window.devicePixelRatio || 1;
@@ -787,28 +788,42 @@ function drawPitchTrack() {
   const g = cv.getContext('2d');
   g.clearRect(0, 0, W, H);
   const yFor = s => H * (1 - (clamp(s, PT_LO, PT_HI) - PT_LO) / (PT_HI - PT_LO));
+  const amp = reactiveLevel;   // how loud you're singing right now — makes the line "breathe"
 
-  // octave gridlines — dashed and subtle, with a solid brighter line at A4 (your reference pitch)
+  // octave gridlines — dashed and subtle, with a solid brighter line at A4 (your reference pitch), labeled like a real staff
+  g.font = `${10 * dpr}px -apple-system,sans-serif`; g.textBaseline = 'middle';
   for (let s = Math.ceil(PT_LO / 12) * 12; s <= PT_HI; s += 12) {
     const y = yFor(s);
     g.strokeStyle = s === 0 ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.07)';
     g.lineWidth = 1;
     g.setLineDash(s === 0 ? [] : [2 * dpr, 5 * dpr]);
     g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    g.fillStyle = s === 0 ? 'rgba(255,255,255,.4)' : 'rgba(255,255,255,.22)';
+    g.fillText(NOTE_NAME(s), 6 * dpr, y - 7 * dpr);
   }
   g.setLineDash([]);
 
+  // group into contiguous runs (breaking at silence), then smooth each run through its midpoints —
+  // turns the raw jagged samples into a fluid curve instead of a jittery polyline
   const n = pitchHistory.length, stepX = W / PT_LEN, hue = reactiveHue.toFixed(0);
-  // one continuous path, split into subpaths at gaps (silence)
-  const path = new Path2D();
-  let drawing = false, firstX = W, lastX = W, lastY = null;
+  const runs = [[]];
   for (let i = 0; i < n; i++) {
-    const v = pitchHistory[i], x = W - (n - i) * stepX;
-    if (Number.isNaN(v)) { drawing = false; continue; }
-    const y = yFor(v);
-    if (!drawing) { path.moveTo(x, y); firstX = Math.min(firstX, x); drawing = true; }
-    else path.lineTo(x, y);
-    lastX = x; lastY = y;
+    const v = pitchHistory[i];
+    if (Number.isNaN(v)) { if (runs[runs.length - 1].length) runs.push([]); continue; }
+    runs[runs.length - 1].push({ x: W - (n - i) * stepX, y: yFor(v) });
+  }
+  const path = new Path2D();
+  let lastX = W, lastY = null;
+  for (const pts of runs) {
+    if (pts.length < 2) continue;
+    path.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
+      path.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const last = pts[pts.length - 1];
+    path.lineTo(last.x, last.y);
+    lastX = last.x; lastY = last.y;
   }
   // fades from transparent (oldest, left) to vivid (now, right) — a true comet tail, one gradient instead of N strokes
   const grad = g.createLinearGradient(W - PT_LEN * stepX, 0, W, 0);
@@ -816,25 +831,26 @@ function drawPitchTrack() {
   grad.addColorStop(.7, `hsla(${hue},90%,65%,.55)`);
   grad.addColorStop(1, `hsla(${hue},90%,68%,.95)`);
 
-  g.save();   // soft outer glow pass
+  g.save();   // soft outer glow pass — thickness and blur both swell with how loud you're singing
   g.shadowColor = `hsla(${hue},90%,60%,.9)`;
-  g.shadowBlur = 11 * dpr;
-  g.strokeStyle = grad; g.lineWidth = 3.5 * dpr; g.lineCap = 'round'; g.lineJoin = 'round';
+  g.shadowBlur = (9 + amp * 12) * dpr;
+  g.strokeStyle = grad; g.lineWidth = (3 + amp * 3) * dpr; g.lineCap = 'round'; g.lineJoin = 'round';
   g.stroke(path);
   g.restore();
-  g.strokeStyle = grad; g.lineWidth = 1.3 * dpr;   // crisp bright core on top of the glow
+  g.strokeStyle = grad; g.lineWidth = (1 + amp * 1.2) * dpr;   // crisp bright core on top of the glow
   g.lineCap = 'round'; g.lineJoin = 'round';
   g.stroke(path);
 
-  if (lastY != null) {   // glowing orb at the live point
-    const glow = g.createRadialGradient(lastX, lastY, 0, lastX, lastY, 20 * dpr);
+  if (lastY != null) {   // glowing orb at the live point, pulsing bigger with volume
+    const r = (16 + amp * 14) * dpr;
+    const glow = g.createRadialGradient(lastX, lastY, 0, lastX, lastY, r);
     glow.addColorStop(0, `hsla(${hue},95%,72%,.9)`);
     glow.addColorStop(.5, `hsla(${hue},95%,68%,.25)`);
     glow.addColorStop(1, `hsla(${hue},95%,68%,0)`);
     g.fillStyle = glow;
-    g.beginPath(); g.arc(lastX, lastY, 20 * dpr, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(lastX, lastY, r, 0, Math.PI * 2); g.fill();
     g.fillStyle = `hsl(${hue},95%,82%)`;
-    g.beginPath(); g.arc(lastX, lastY, 3 * dpr, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(lastX, lastY, (2.5 + amp * 2) * dpr, 0, Math.PI * 2); g.fill();
   }
 }
 
