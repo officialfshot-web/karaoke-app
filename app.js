@@ -147,6 +147,12 @@ const songFromItem = it => {
   const id = it.contentDetails?.videoId || sn.resourceId?.videoId || it.id?.videoId || (typeof it.id === 'string' ? it.id : null);
   return { id, title: decode(sn.title || ''), channel: decode(sn.videoOwnerChannelTitle || sn.channelTitle || '') };
 };
+const MIN_SONG_SECS = 70;   // YouTube Shorts and other short clips are almost always under this — real songs aren't
+async function songsByIds(ids) {   // resolves video IDs to songs, filtering out Shorts/clips by actual duration
+  if (!ids.length) return [];
+  const v = await yt('videos', { part: 'snippet,contentDetails', id: ids.join(',') });
+  return v.items.filter(x => isoSecs(x.contentDetails.duration) >= MIN_SONG_SECS).map(songFromItem);
+}
 const tile = (s, key, i) => {
   const n = names(s.title, s.channel);
   return `<button class="tile tap" data-k="${key}" data-i="${i}"><i class="art cover" style="${art(s.id)}"></i><b class="ell">${esc(n.track)}</b><span class="ell">${esc(n.artist)}</span></button>`;
@@ -211,7 +217,7 @@ $('#find').onsubmit = async e => {
   out.innerHTML = `<h2>Results</h2>` + `<div class="row"><i class="art skel"></i><div><b class="skel" style="height:14px;width:60%;border-radius:6px"></b></div></div>`.repeat(4);
   try {
     const j = await yt('search', { part: 'snippet', type: 'video', videoCategoryId: '10', maxResults: 25, q: v });
-    lists.results = j.items.map(songFromItem);
+    lists.results = await songsByIds(j.items.map(i => i.id.videoId).filter(Boolean));
     out.innerHTML = `<h2>Results</h2>` + (lists.results.map((s, i) => row(s, 'results', i)).join('') || '<div class="hint">Nothing found. Try the artist name too.</div>');
   } catch (err) { out.innerHTML = `<div class="hint">${esc(err.message)}</div>`; }
 };
@@ -234,7 +240,9 @@ async function openList(id, name) {
       if (page) p.pageToken = page;
       const j = await yt('playlistItems', p);
       if (my !== listToken) return;
-      lists.pl.push(...j.items.map(songFromItem).filter(s => s.id && !/^(Deleted|Private) video$/.test(s.title)));
+      const ids = j.items.map(i => i.contentDetails?.videoId || i.snippet?.resourceId?.videoId).filter(Boolean);
+      lists.pl.push(...await songsByIds(ids));
+      if (my !== listToken) return;
       page = j.nextPageToken;
       renderList();
     } while (page && lists.pl.length < 500);
